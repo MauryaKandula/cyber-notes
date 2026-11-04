@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Kandula Paul Saketh Maurya (@MauryaKandula)
 """
 CyberNotes — Modern Neon Sticky Notes for Windows
 Created by Kandula Paul Saketh Maurya (@MauryaKandula)

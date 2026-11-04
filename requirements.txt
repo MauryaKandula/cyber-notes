@@ -1,1 +1,4 @@
+# CyberNotes Runtime & Packaging Dependencies
+# SPDX-License-Identifier: MIT
 PyQt6>=6.5.0
+Pillow>=10.0.0

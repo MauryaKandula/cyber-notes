@@ -1,3 +1,6 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Kandula Paul Saketh Maurya (@MauryaKandula)
 """
 Unit Test Suite for CyberNotes
 Author: Kandula Paul Saketh Maurya (@MauryaKandula)
