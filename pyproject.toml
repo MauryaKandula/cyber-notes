@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cybernotes"
-version = "2.0.0"
+version = "2.1.0"
 description = "Modern, ultra-smooth neon desktop sticky notes application built with PyQt6."
 readme = "README.md"
 requires-python = ">=3.10"

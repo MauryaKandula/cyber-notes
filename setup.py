@@ -2,7 +2,7 @@ from setuptools import setup
 
 setup(
     name="cybernotes",
-    version="2.0.0",
+    version="2.1.0",
     author="Kandula Paul Saketh Maurya",
     author_email="mauryakpsofficial@gmail.com",
     description="Modern, ultra-smooth neon desktop sticky notes application built with PyQt6.",

@@ -637,7 +637,11 @@ def lerp_color(c1: QColor, c2: QColor, t: float) -> QColor:
 
 
 def create_cybernotes_icon() -> QIcon:
-    """Generates a crisp, high-DPI neon sticky-note application icon."""
+    """Loads the multi-resolution assets/cybernotes.ico or renders a fallback vector icon."""
+    ico_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "cybernotes.ico")
+    if os.path.exists(ico_path):
+        return QIcon(ico_path)
+
     pix = QPixmap(64, 64)
     pix.fill(Qt.GlobalColor.transparent)
     p = QPainter(pix)
@@ -2619,6 +2623,14 @@ class CyberNotesApp:
 
 
 def main_entry():
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                "MauryaKandula.CyberNotes.Desktop.2.1"
+            )
+        except Exception:
+            pass
     app = CyberNotesApp()
     app.run()
 
