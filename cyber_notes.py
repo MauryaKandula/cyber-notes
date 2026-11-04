@@ -5,18 +5,19 @@ Created by Kandula Paul Saketh Maurya (@MauryaKandula)
 Licensed under the MIT License.
 
 Features:
-- Spacious, minimal Sticky Notes UX inspired by Microsoft Sticky Notes & Apple Stickies
-  with a sleek Cyberpunk neon color palette.
+- Smooth Gliding & Breathing Neon Typing Caret (`SmoothCaretTextEdit`) with subtle
+  active-line ambient illumination.
+- Live In-Note Syntax Highlighting (`CyberNoteHighlighter`) for URLs, #tags, phone numbers,
+  and task markers.
+- Tactile Click Ripple & Micro-Spring Button Animations (`AnimatedGlassButton` & `AnimatedLinkPill`).
+- Smooth 240ms Color Theme Cross-Fade Transitions (`GlassNoteSurface`).
 - 144Hz/240Hz native OS compositor dragging & 8-edge resizing (`startSystemMove` / `startSystemResize`).
-- Smooth 60fps `QPropertyAnimation` & `QVariantAnimation` transitions (window fade-in,
-  sliding color drawer, animated color orbs, and smooth card hover elevation).
 - Rich-Text editing (`Ctrl+B` Bold, `Ctrl+I` Italic, `Ctrl+U` Underline, `Ctrl+T` Strikethrough,
   `Ctrl+Shift+L` Bullet List) + freehand neon ink drawing mode.
-- Local SQLite WAL persistence with automatic backup & optional Windows Sticky Notes import.
-- Windows System Tray integration for quick access.
+- Local SQLite WAL persistence + Windows System Tray integration.
 """
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 __author__ = "Kandula Paul Saketh Maurya"
 __license__ = "MIT"
 
@@ -197,8 +198,8 @@ class PlumStoragePool:
                 "RemoteId" varchar DEFAULT '',
                 "RemoteSchemaVersion" integer DEFAULT 0,
                 "IsRemoteDataInvalid" integer DEFAULT 0,
-                "CreationWidth" float DEFAULT 380.0,
-                "CreationHeight" float DEFAULT 360.0,
+                "CreationWidth" float DEFAULT 405.0,
+                "CreationHeight" float DEFAULT 395.0,
                 "ChangeKey" varchar DEFAULT ''
             )
             """
@@ -570,7 +571,7 @@ class PlumStoragePool:
 
 
 # ---------------------------------------------------------------------------
-# 3. PyQt6 Spacious, Animated, Ultra-Smooth Desktop UI
+# 3. PyQt6 Hardware-Accelerated UI, Gliding Caret & Micro-Animations
 # ---------------------------------------------------------------------------
 from PyQt6.QtCore import (
     QEasingCurve,
@@ -585,6 +586,7 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import (
     QAction,
+    QClipboard,
     QColor,
     QFont,
     QIcon,
@@ -595,9 +597,11 @@ from PyQt6.QtGui import (
     QPen,
     QPixmap,
     QShortcut,
+    QSyntaxHighlighter,
     QTextBlockFormat,
     QTextCharFormat,
     QTextCursor,
+    QTextDocument,
     QTextListFormat,
 )
 from PyQt6.QtWidgets import (
@@ -605,7 +609,6 @@ from PyQt6.QtWidgets import (
     QFileDialog,
     QFrame,
     QGraphicsDropShadowEffect,
-    QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -621,6 +624,16 @@ from PyQt6.QtWidgets import (
 )
 
 RESIZE_MARGIN = 10
+
+
+def lerp_color(c1: QColor, c2: QColor, t: float) -> QColor:
+    t = max(0.0, min(1.0, float(t)))
+    return QColor(
+        int(c1.red() + (c2.red() - c1.red()) * t),
+        int(c1.green() + (c2.green() - c1.green()) * t),
+        int(c1.blue() + (c2.blue() - c1.blue()) * t),
+        int(c1.alpha() + (c2.alpha() - c1.alpha()) * t),
+    )
 
 
 def create_cybernotes_icon() -> QIcon:
@@ -686,9 +699,524 @@ def cursor_for_edges(edges: Qt.Edge) -> Qt.CursorShape:
     return Qt.CursorShape.ArrowCursor
 
 
+class AnimatedGlassButton(QPushButton):
+    """
+    Custom hardware-rendered button with:
+    - Smooth hover glow interpolation (140ms OutQuad)
+    - Tactile click micro-spring scale bounce (0.88 -> 1.0)
+    - Expanding translucent neon click ripple wave (260ms OutCubic)
+    """
+
+    def __init__(
+        self,
+        text: str = "",
+        parent=None,
+        is_close: bool = False,
+        is_primary: bool = False,
+        corner_radius: float = 7.0,
+    ):
+        super().__init__(text, parent)
+        self.accent_color = QColor("#FFE600")
+        self.text_color = QColor(255, 255, 255, 175)
+        self.is_close = is_close
+        self.is_primary = is_primary
+        self.corner_radius = corner_radius
+
+        self.hover_p = 0.0
+        self.press_scale = 1.0
+        self.ripple_p = 1.0
+        self.ripple_center = QPointF(0, 0)
+
+        self._hover_anim = QVariantAnimation(self)
+        self._hover_anim.setDuration(140)
+        self._hover_anim.setEasingCurve(QEasingCurve.Type.OutQuad)
+        self._hover_anim.valueChanged.connect(self._on_hover_val)
+
+        self._spring_anim = QVariantAnimation(self)
+        self._spring_anim.setDuration(210)
+        self._spring_anim.setEasingCurve(QEasingCurve.Type.OutBack)
+        self._spring_anim.valueChanged.connect(self._on_spring_val)
+
+        self._ripple_anim = QVariantAnimation(self)
+        self._ripple_anim.setDuration(280)
+        self._ripple_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._ripple_anim.valueChanged.connect(self._on_ripple_val)
+
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def set_accent(self, hex_color: str, custom_text_color: QColor | None = None):
+        self.accent_color = QColor(hex_color)
+        if custom_text_color is not None:
+            self.text_color = custom_text_color
+        self.update()
+
+    def _on_hover_val(self, v):
+        self.hover_p = float(v)
+        self.update()
+
+    def _on_spring_val(self, v):
+        self.press_scale = float(v)
+        self.update()
+
+    def _on_ripple_val(self, v):
+        self.ripple_p = float(v)
+        self.update()
+
+    def enterEvent(self, event):
+        self._hover_anim.stop()
+        self._hover_anim.setStartValue(self.hover_p)
+        self._hover_anim.setEndValue(1.0)
+        self._hover_anim.start()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._hover_anim.stop()
+        self._hover_anim.setStartValue(self.hover_p)
+        self._hover_anim.setEndValue(0.0)
+        self._hover_anim.start()
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.ripple_center = event.position()
+            self._spring_anim.stop()
+            self._spring_anim.setStartValue(0.95)
+            self._spring_anim.setEndValue(0.89)
+            self._spring_anim.setDuration(80)
+            self._spring_anim.start()
+
+            self._ripple_anim.stop()
+            self._ripple_anim.setStartValue(0.0)
+            self._ripple_anim.setEndValue(1.0)
+            self._ripple_anim.start()
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._spring_anim.stop()
+            self._spring_anim.setDuration(220)
+            self._spring_anim.setEasingCurve(QEasingCurve.Type.OutBack)
+            self._spring_anim.setStartValue(self.press_scale)
+            self._spring_anim.setEndValue(1.0)
+            self._spring_anim.start()
+        super().mouseReleaseEvent(event)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+        cx, cy = self.width() / 2.0, self.height() / 2.0
+        painter.translate(cx, cy)
+        painter.scale(self.press_scale, self.press_scale)
+        painter.translate(-cx, -cy)
+
+        rect = QRectF(self.rect()).adjusted(1.0, 1.0, -1.0, -1.0)
+        path = QPainterPath()
+        path.addRoundedRect(rect, self.corner_radius, self.corner_radius)
+
+        checked = self.isCheckable() and self.isChecked()
+
+        if self.is_primary:
+            base = self.accent_color
+            hover_c = base.lighter(118)
+            bg = lerp_color(base, hover_c, self.hover_p)
+            painter.fillPath(path, bg)
+            fg = QColor("#090B10")
+        elif self.is_close:
+            bg = QColor(255, 59, 92, int(215 * self.hover_p))
+            painter.fillPath(path, bg)
+            fg = lerp_color(QColor(255, 255, 255, 150), QColor(255, 255, 255, 255), self.hover_p)
+        else:
+            if checked:
+                bg = QColor(self.accent_color)
+                bg.setAlpha(int(45 + 25 * self.hover_p))
+                painter.fillPath(path, bg)
+                border = QColor(self.accent_color)
+                border.setAlpha(int(120 + 60 * self.hover_p))
+                painter.setPen(QPen(border, 1.1))
+                painter.drawPath(path)
+                fg = QColor(self.accent_color)
+            else:
+                bg = QColor(255, 255, 255, int(26 * self.hover_p))
+                painter.fillPath(path, bg)
+                fg = lerp_color(self.text_color, QColor("#FFFFFF"), self.hover_p)
+
+        # Expanding Click Ripple Wave
+        if 0.0 < self.ripple_p < 1.0:
+            painter.save()
+            painter.setClipPath(path)
+            max_r = max(self.width(), self.height()) * 1.15
+            cur_r = max_r * self.ripple_p
+            rip_col = QColor("#090B10") if self.is_primary else QColor(self.accent_color)
+            rip_col.setAlpha(int(95 * (1.0 - self.ripple_p)))
+            painter.setBrush(rip_col)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawEllipse(self.ripple_center, cur_r, cur_r)
+            painter.restore()
+
+        painter.setFont(self.font())
+        painter.setPen(fg)
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, self.text())
+
+
+class AnimatedLinkPill(QPushButton):
+    """
+    Aesthetic interactive link/phone insight pill with:
+    - Smooth background fill sweep on hover
+    - Diagonal micro-slide on the `↗` launch icon
+    - Right-click or Ctrl+click to copy URL with animated `✓ Copied` feedback
+    """
+
+    def __init__(self, label_text: str, launch_url: str, accent_hex: str, is_url: bool = True):
+        super().__init__()
+        self.base_label = label_text
+        self.launch_url = launch_url
+        self.accent_color = QColor(accent_hex)
+        self.is_url = is_url
+        self.hover_p = 0.0
+        self.press_scale = 1.0
+        self.copied_mode = False
+
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedHeight(26)
+        self.setFont(QFont("Segoe UI Semibold", 9))
+        self.setToolTip(f"Click to open: {launch_url}\nRight-click to copy link")
+
+        fm = self.fontMetrics()
+        w = fm.horizontalAdvance(self.base_label) + 36
+        self.setFixedWidth(min(max(w, 90), 270))
+
+        self._hover_anim = QVariantAnimation(self)
+        self._hover_anim.setDuration(160)
+        self._hover_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._hover_anim.valueChanged.connect(self._on_hover)
+
+        self._spring_anim = QVariantAnimation(self)
+        self._spring_anim.setDuration(180)
+        self._spring_anim.setEasingCurve(QEasingCurve.Type.OutBack)
+        self._spring_anim.valueChanged.connect(self._on_spring)
+
+        self.clicked.connect(lambda: webbrowser.open(self.launch_url))
+
+    def _on_hover(self, v):
+        self.hover_p = float(v)
+        self.update()
+
+    def _on_spring(self, v):
+        self.press_scale = float(v)
+        self.update()
+
+    def enterEvent(self, event):
+        self._hover_anim.stop()
+        self._hover_anim.setStartValue(self.hover_p)
+        self._hover_anim.setEndValue(1.0)
+        self._hover_anim.start()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._hover_anim.stop()
+        self._hover_anim.setStartValue(self.hover_p)
+        self._hover_anim.setEndValue(0.0)
+        self._hover_anim.start()
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.RightButton:
+            QApplication.clipboard().setText(self.launch_url)
+            self.copied_mode = True
+            self.update()
+            QTimer.singleShot(1200, self._reset_copied)
+            event.accept()
+            return
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._spring_anim.stop()
+            self._spring_anim.setStartValue(1.0)
+            self._spring_anim.setEndValue(0.93)
+            self._spring_anim.start()
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._spring_anim.stop()
+            self._spring_anim.setStartValue(self.press_scale)
+            self._spring_anim.setEndValue(1.0)
+            self._spring_anim.start()
+        super().mouseReleaseEvent(event)
+
+    def _reset_copied(self):
+        self.copied_mode = False
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+        cx, cy = self.width() / 2.0, self.height() / 2.0
+        painter.translate(cx, cy)
+        painter.scale(self.press_scale, self.press_scale)
+        painter.translate(-cx, -cy)
+
+        rect = QRectF(self.rect()).adjusted(1.0, 1.0, -1.0, -1.0)
+        path = QPainterPath()
+        path.addRoundedRect(rect, 8.0, 8.0)
+
+        bg_idle = QColor(self.accent_color)
+        bg_idle.setAlpha(32)
+        bg_hover = QColor(self.accent_color)
+        bg_hover.setAlpha(235)
+        painter.fillPath(path, lerp_color(bg_idle, bg_hover, self.hover_p))
+
+        border = QColor(self.accent_color)
+        border.setAlpha(int(80 + 140 * self.hover_p))
+        painter.setPen(QPen(border, 1.0))
+        painter.drawPath(path)
+
+        fg = lerp_color(self.accent_color, QColor("#090B10"), self.hover_p)
+        painter.setPen(fg)
+        painter.setFont(self.font())
+
+        if self.copied_mode:
+            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "✓  Copied to clipboard")
+            return
+
+        icon = "↗" if self.is_url else "📞"
+        # Subtle micro-slide of the arrow on hover
+        ix = rect.left() + 10.0 + (1.5 * self.hover_p)
+        iy = rect.top() - (1.2 * self.hover_p)
+        painter.drawText(QRectF(ix, iy, 18, rect.height()), Qt.AlignmentFlag.AlignVCenter, icon)
+
+        text_rect = QRectF(rect.left() + 26.0, rect.top(), rect.width() - 34.0, rect.height())
+        painter.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, self.base_label)
+
+
+class CyberNoteHighlighter(QSyntaxHighlighter):
+    """
+    Live in-editor highlighter that styles URLs, #tags, and task markers
+    in the note's neon theme color as you type.
+    """
+
+    def __init__(self, document: QTextDocument, accent_hex: str = "#FFE600"):
+        super().__init__(document)
+        self.accent_color = QColor(accent_hex)
+        self._build_rules()
+
+    def set_accent(self, accent_hex: str):
+        self.accent_color = QColor(accent_hex)
+        self._build_rules()
+        self.rehighlight()
+
+    def _build_rules(self):
+        self.rules = []
+
+        # 1. URLs (Glowing neon accent + underline)
+        url_fmt = QTextCharFormat()
+        url_fmt.setForeground(self.accent_color)
+        url_fmt.setFontUnderline(True)
+        self.rules.append((re.compile(r"https?://[^\s<>\"']+"), url_fmt))
+
+        # 2. #Tags (Soft glowing neon accent)
+        tag_fmt = QTextCharFormat()
+        tag_col = QColor(self.accent_color)
+        tag_col.setAlpha(220)
+        tag_fmt.setForeground(tag_col)
+        tag_fmt.setFontWeight(QFont.Weight.DemiBold)
+        self.rules.append((re.compile(r"(?:^|\s)(#[A-Za-z0-9_\-]+)"), tag_fmt))
+
+    def highlightBlock(self, text: str):
+        for pattern, fmt in self.rules:
+            for match in pattern.finditer(text):
+                if match.lastindex:
+                    start, end = match.span(1)
+                else:
+                    start, end = match.span(0)
+                self.setFormat(start, end - start, fmt)
+
+
+class SmoothCaretTextEdit(QTextEdit):
+    """
+    Custom QTextEdit with:
+    - Smooth Gliding Neon Caret (`85ms` OutCubic position interpolation)
+    - Smooth Sine-Wave Breathing Caret Glow when idle
+    - Subtle Active-Line Ambient Highlight
+    - Clickable in-note links
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.accent_color = QColor("#FFE600")
+        # Hide jerky native 1px XOR caret; we paint our own smooth gliding neon caret
+        self.setCursorWidth(0)
+        self.setMouseTracking(True)
+
+        self._caret_rect = QRectF(8, 8, 2.2, 20)
+        self._caret_opacity = 1.0
+        self._is_typing = False
+
+        # Smooth glide animation when moving cursor or typing
+        self._glide_anim = QVariantAnimation(self)
+        self._glide_anim.setDuration(85)
+        self._glide_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._glide_anim.valueChanged.connect(self._on_glide_step)
+
+        # Smooth breathing animation when idle
+        self._breath_anim = QVariantAnimation(self)
+        self._breath_anim.setDuration(950)
+        self._breath_anim.setStartValue(1.0)
+        self._breath_anim.setEndValue(0.18)
+        self._breath_anim.setEasingCurve(QEasingCurve.Type.InOutSine)
+        self._breath_anim.valueChanged.connect(self._on_breath_step)
+        self._breath_anim.finished.connect(self._reverse_breath)
+
+        self._idle_timer = QTimer(self)
+        self._idle_timer.setSingleShot(True)
+        self._idle_timer.setInterval(450)
+        self._idle_timer.timeout.connect(self._start_breathing)
+
+        self.cursorPositionChanged.connect(self._update_caret_target)
+        self.textChanged.connect(self._update_caret_target)
+        self.verticalScrollBar().valueChanged.connect(self._snap_caret_target)
+
+    def set_accent(self, hex_color: str):
+        self.accent_color = QColor(hex_color)
+        self.viewport().update()
+
+    def _snap_caret_target(self):
+        cr = self.cursorRect()
+        self._caret_rect = QRectF(float(cr.x()), float(cr.y()), 2.2, float(max(cr.height(), 16)))
+        self.viewport().update()
+
+    def _update_caret_target(self):
+        cr = self.cursorRect()
+        target = QRectF(float(cr.x()), float(cr.y()), 2.2, float(max(cr.height(), 16)))
+
+        self._is_typing = True
+        self._breath_anim.stop()
+        self._caret_opacity = 1.0
+        self._idle_timer.start()
+
+        # If distance is huge (e.g. initial load), snap directly; otherwise glide smoothly
+        dx = abs(target.x() - self._caret_rect.x())
+        dy = abs(target.y() - self._caret_rect.y())
+        if dx > 350 or dy > 250:
+            self._caret_rect = target
+            self.viewport().update()
+            return
+
+        self._glide_anim.stop()
+        self._glide_anim.setStartValue(self._caret_rect)
+        self._glide_anim.setEndValue(target)
+        self._glide_anim.start()
+
+    def _on_glide_step(self, val):
+        if isinstance(val, QRectF):
+            self._caret_rect = val
+            self.viewport().update()
+
+    def _start_breathing(self):
+        self._is_typing = False
+        if self.hasFocus():
+            self._breath_anim.setDirection(QVariantAnimation.Direction.Forward)
+            self._breath_anim.start()
+
+    def _reverse_breath(self):
+        if not self.hasFocus() or self._is_typing:
+            return
+        if self._breath_anim.direction() == QVariantAnimation.Direction.Forward:
+            self._breath_anim.setDirection(QVariantAnimation.Direction.Backward)
+        else:
+            self._breath_anim.setDirection(QVariantAnimation.Direction.Forward)
+        self._breath_anim.start()
+
+    def _on_breath_step(self, val):
+        self._caret_opacity = float(val)
+        self.viewport().update()
+
+    def focusInEvent(self, event):
+        super().focusInEvent(event)
+        self._snap_caret_target()
+        self._caret_opacity = 1.0
+        self._idle_timer.start()
+        self.viewport().update()
+
+    def focusOutEvent(self, event):
+        super().focusOutEvent(event)
+        self._breath_anim.stop()
+        self._glide_anim.stop()
+        self.viewport().update()
+
+    def _url_at_pos(self, pos: QPoint) -> str | None:
+        cursor = self.cursorForPosition(pos)
+        block_text = cursor.block().text()
+        col = cursor.positionInBlock()
+        for m in re.finditer(r"https?://[^\s<>\"']+", block_text):
+            if m.start() <= col <= m.end():
+                return m.group(0)
+        return None
+
+    def mouseMoveEvent(self, event):
+        url = self._url_at_pos(event.pos())
+        if url:
+            self.viewport().setCursor(Qt.CursorShape.PointingHandCursor)
+        else:
+            self.viewport().setCursor(Qt.CursorShape.IBeamCursor)
+        super().mouseMoveEvent(event)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            url = self._url_at_pos(event.pos())
+            if url and (event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+                webbrowser.open(url)
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+    def paintEvent(self, event):
+        # 1. Subtle active-line ambient illumination when focused
+        if self.hasFocus():
+            vp_painter = QPainter(self.viewport())
+            vp_painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            line_rect = QRectF(
+                2.0,
+                self._caret_rect.y() - 1.0,
+                float(self.viewport().width() - 4.0),
+                self._caret_rect.height() + 2.0,
+            )
+            line_col = QColor(self.accent_color)
+            line_col.setAlpha(11)
+            line_path = QPainterPath()
+            line_path.addRoundedRect(line_rect, 5.0, 5.0)
+            vp_painter.fillPath(line_path, line_col)
+            vp_painter.end()
+
+        # 2. Render rich text document
+        super().paintEvent(event)
+
+        # 3. Render Smooth Gliding & Breathing Neon Caret
+        if self.hasFocus():
+            painter = QPainter(self.viewport())
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+            # Soft outer neon halo around the caret
+            halo_rect = self._caret_rect.adjusted(-2.2, -1.0, 2.2, 1.0)
+            halo_col = QColor(self.accent_color)
+            halo_col.setAlpha(int(65 * self._caret_opacity))
+            halo_path = QPainterPath()
+            halo_path.addRoundedRect(halo_rect, 2.5, 2.5)
+            painter.fillPath(halo_path, halo_col)
+
+            # Crisp inner neon pill caret
+            core_col = QColor(self.accent_color)
+            core_col.setAlpha(int(250 * self._caret_opacity))
+            core_path = QPainterPath()
+            core_path.addRoundedRect(self._caret_rect, 1.2, 1.2)
+            painter.fillPath(core_path, core_col)
+            painter.end()
+
+
 class GlassNoteSurface(QFrame):
     """
-    Smooth rounded glass surface with a 5px top color bar and animated focus glow.
+    Smooth rounded glass surface with a 5px top color bar, animated focus glow,
+    and 240ms smooth color-theme cross-fading.
     """
 
     def __init__(self, parent=None):
@@ -697,18 +1225,59 @@ class GlassNoteSurface(QFrame):
         self.focus_progress = 0.0
         self.corner_radius = 16.0
 
+        self._cur_accent = QColor(self.theme["accent"])
+        self._cur_top_bg = QColor(self.theme["body_bg"])
+        self._cur_bot_bg = QColor(self.theme["body_bg_bottom"])
+
+        self._start_accent = QColor(self._cur_accent)
+        self._start_top_bg = QColor(self._cur_top_bg)
+        self._start_bot_bg = QColor(self._cur_bot_bg)
+
+        self._target_accent = QColor(self._cur_accent)
+        self._target_top_bg = QColor(self._cur_top_bg)
+        self._target_bot_bg = QColor(self._cur_bot_bg)
+
         self._focus_anim = QVariantAnimation(self)
         self._focus_anim.setDuration(180)
         self._focus_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._focus_anim.valueChanged.connect(self._on_focus_anim)
 
+        self._theme_anim = QVariantAnimation(self)
+        self._theme_anim.setDuration(240)
+        self._theme_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._theme_anim.valueChanged.connect(self._on_theme_anim)
+
     def _on_focus_anim(self, val):
         self.focus_progress = float(val)
         self.update()
 
-    def set_theme(self, theme_dict: dict):
-        self.theme = theme_dict
+    def _on_theme_anim(self, val):
+        t = float(val)
+        self._cur_accent = lerp_color(self._start_accent, self._target_accent, t)
+        self._cur_top_bg = lerp_color(self._start_top_bg, self._target_top_bg, t)
+        self._cur_bot_bg = lerp_color(self._start_bot_bg, self._target_bot_bg, t)
         self.update()
+
+    def set_theme(self, theme_dict: dict, animate: bool = True):
+        self.theme = theme_dict
+        self._start_accent = QColor(self._cur_accent)
+        self._start_top_bg = QColor(self._cur_top_bg)
+        self._start_bot_bg = QColor(self._cur_bot_bg)
+
+        self._target_accent = QColor(theme_dict["accent"])
+        self._target_top_bg = QColor(theme_dict["body_bg"])
+        self._target_bot_bg = QColor(theme_dict["body_bg_bottom"])
+
+        if animate:
+            self._theme_anim.stop()
+            self._theme_anim.setStartValue(0.0)
+            self._theme_anim.setEndValue(1.0)
+            self._theme_anim.start()
+        else:
+            self._cur_accent = QColor(self._target_accent)
+            self._cur_top_bg = QColor(self._target_top_bg)
+            self._cur_bot_bg = QColor(self._target_bot_bg)
+            self.update()
 
     def set_focused(self, focused: bool):
         self._focus_anim.stop()
@@ -726,9 +1295,9 @@ class GlassNoteSurface(QFrame):
 
         # 1. Soft vertical gradient background
         grad = QLinearGradient(rect.topLeft(), rect.bottomLeft())
-        c_top = QColor(self.theme["body_bg"])
+        c_top = QColor(self._cur_top_bg)
         c_top.setAlpha(248)
-        c_bot = QColor(self.theme["body_bg_bottom"])
+        c_bot = QColor(self._cur_bot_bg)
         c_bot.setAlpha(252)
         grad.setColorAt(0.0, c_top)
         grad.setColorAt(1.0, c_bot)
@@ -736,22 +1305,22 @@ class GlassNoteSurface(QFrame):
 
         # 2. Top soft ambient tint from the accent bar
         glow_grad = QLinearGradient(rect.topLeft(), QPointF(rect.left(), rect.top() + 75.0))
-        c_accent_glow = QColor(self.theme["accent"])
+        c_accent_glow = QColor(self._cur_accent)
         alpha = int(16 + 22 * self.focus_progress)
         c_accent_glow.setAlpha(alpha)
         glow_grad.setColorAt(0.0, c_accent_glow)
         glow_grad.setColorAt(1.0, QColor(0, 0, 0, 0))
         painter.fillPath(path, glow_grad)
 
-        # 3. Clean 5px top color bar (Microsoft/Apple Sticky Notes style)
+        # 3. Clean 5px top color bar
         painter.save()
         painter.setClipPath(path)
         top_strip = QRectF(rect.left(), rect.top(), rect.width(), 5.0)
-        painter.fillRect(top_strip, QColor(self.theme["accent"]))
+        painter.fillRect(top_strip, self._cur_accent)
         painter.restore()
 
         # 4. Smooth interpolated border
-        border_color = QColor(self.theme["accent"])
+        border_color = QColor(self._cur_accent)
         border_alpha = int(50 + 130 * self.focus_progress)
         border_color.setAlpha(border_alpha)
         pen = QPen(border_color, 1.0 + 0.4 * self.focus_progress)
@@ -857,7 +1426,7 @@ class NeonInkCanvas(QWidget):
 
 
 class AnimatedColorOrb(QPushButton):
-    """Smoothly animated circular color swatch button."""
+    """Smoothly animated circular color swatch button with hover & click bounce."""
 
     def __init__(self, theme_key: str, theme_data: dict, on_select):
         super().__init__()
@@ -865,6 +1434,7 @@ class AnimatedColorOrb(QPushButton):
         self.theme_data = theme_data
         self.is_active_theme = False
         self.hover_scale = 0.0
+        self.press_scale = 1.0
         self.setFixedSize(32, 32)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setToolTip(theme_data["label"])
@@ -875,8 +1445,17 @@ class AnimatedColorOrb(QPushButton):
         self._anim.setEasingCurve(QEasingCurve.Type.OutQuad)
         self._anim.valueChanged.connect(self._on_anim)
 
+        self._spring = QVariantAnimation(self)
+        self._spring.setDuration(200)
+        self._spring.setEasingCurve(QEasingCurve.Type.OutBack)
+        self._spring.valueChanged.connect(self._on_spring)
+
     def _on_anim(self, val):
         self.hover_scale = float(val)
+        self.update()
+
+    def _on_spring(self, val):
+        self.press_scale = float(val)
         self.update()
 
     def enterEvent(self, event):
@@ -893,6 +1472,22 @@ class AnimatedColorOrb(QPushButton):
         self._anim.start()
         super().leaveEvent(event)
 
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._spring.stop()
+            self._spring.setStartValue(1.0)
+            self._spring.setEndValue(0.82)
+            self._spring.start()
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._spring.stop()
+            self._spring.setStartValue(self.press_scale)
+            self._spring.setEndValue(1.0)
+            self._spring.start()
+        super().mouseReleaseEvent(event)
+
     def set_active(self, active: bool):
         self.is_active_theme = active
         self.update()
@@ -902,8 +1497,12 @@ class AnimatedColorOrb(QPushButton):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         center = QPointF(self.width() / 2.0, self.height() / 2.0)
 
+        painter.translate(center)
+        painter.scale(self.press_scale, self.press_scale)
+        painter.translate(-center)
+
         base_r = 10.5 if self.is_active_theme else 9.0
-        radius = base_r + 2.0 * self.hover_scale
+        radius = base_r + 2.2 * self.hover_scale
         c = QColor(self.theme_data["accent"])
 
         if self.hover_scale > 0.05 or self.is_active_theme:
@@ -945,7 +1544,6 @@ class CyberStickyNoteWindow(QWidget):
         self.palette_open: bool = False
         self._loading_content: bool = False
 
-        # Debounce timers so typing & moving never touch disk during animation
         self._save_text_timer = QTimer(self)
         self._save_text_timer.setSingleShot(True)
         self._save_text_timer.setInterval(250)
@@ -959,11 +1557,11 @@ class CyberStickyNoteWindow(QWidget):
         self._configure_window_flags()
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setMouseTracking(True)
-        self.setMinimumSize(310, 270)
+        self.setMinimumSize(320, 290)
 
         self._build_ui()
         self._restore_geometry(note_data.get("WindowPosition", ""))
-        self._apply_theme()
+        self._apply_theme(animate=False)
         self._load_content()
         self._animate_open()
 
@@ -996,7 +1594,7 @@ class CyberStickyNoteWindow(QWidget):
             idx = len(self.app.open_windows)
             x = 540 + (idx % 2) * 415
             y = 80 + (idx // 2) * 410
-            self.setGeometry(x, y, 400, 395)
+            self.setGeometry(x, y, 405, 395)
 
     def _build_ui(self):
         outer = QVBoxLayout(self)
@@ -1016,7 +1614,7 @@ class CyberStickyNoteWindow(QWidget):
         card_layout.setContentsMargins(18, 12, 18, 14)
         card_layout.setSpacing(8)
 
-        # --- 1. Clean, Spacious Top Header ---
+        # --- 1. Clean, Spacious Top Header with Animated Buttons ---
         self.header_widget = QWidget(self.card)
         self.header_widget.setFixedHeight(32)
         self.header_widget.setCursor(Qt.CursorShape.SizeAllCursor)
@@ -1024,16 +1622,16 @@ class CyberStickyNoteWindow(QWidget):
         header_layout.setContentsMargins(0, 2, 0, 0)
         header_layout.setSpacing(6)
 
-        self.btn_new = QPushButton("＋")
+        self.btn_new = AnimatedGlassButton("＋", self.header_widget)
         self.btn_new.setFixedSize(30, 28)
-        self.btn_new.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_new.setFont(QFont("Segoe UI", 12))
         self.btn_new.setToolTip("New Note (Ctrl+N)")
         self.btn_new.clicked.connect(self.app.spawn_new_note)
         header_layout.addWidget(self.btn_new)
 
-        self.btn_hub = QPushButton("☷")
+        self.btn_hub = AnimatedGlassButton("☷", self.header_widget)
         self.btn_hub.setFixedSize(30, 28)
-        self.btn_hub.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_hub.setFont(QFont("Segoe UI", 11))
         self.btn_hub.setToolTip("All Notes")
         self.btn_hub.clicked.connect(self.app.show_hub)
         header_layout.addWidget(self.btn_hub)
@@ -1041,25 +1639,27 @@ class CyberStickyNoteWindow(QWidget):
         header_layout.addStretch(1)
 
         # Color Theme Button
-        self.btn_palette = QPushButton("●")
+        self.btn_palette = AnimatedGlassButton("●", self.header_widget)
         self.btn_palette.setFixedSize(30, 28)
-        self.btn_palette.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_palette.setFont(QFont("Segoe UI", 13))
         self.btn_palette.setToolTip("Change Color")
         self.btn_palette.clicked.connect(self._toggle_palette_drawer)
         header_layout.addWidget(self.btn_palette)
 
         # Pin Always-on-Top
-        self.btn_pin = QPushButton("📌")
+        self.btn_pin = AnimatedGlassButton("📌", self.header_widget)
+        self.btn_pin.setCheckable(True)
+        self.btn_pin.setChecked(self.is_always_on_top)
         self.btn_pin.setFixedSize(30, 28)
-        self.btn_pin.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_pin.setFont(QFont("Segoe UI", 10))
         self.btn_pin.setToolTip("Keep on Top")
         self.btn_pin.clicked.connect(self._toggle_always_on_top)
         header_layout.addWidget(self.btn_pin)
 
         # Close Note Window
-        self.btn_close = QPushButton("✕")
+        self.btn_close = AnimatedGlassButton("✕", self.header_widget, is_close=True)
         self.btn_close.setFixedSize(30, 28)
-        self.btn_close.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_close.setFont(QFont("Segoe UI", 10))
         self.btn_close.setToolTip("Close Note")
         self.btn_close.clicked.connect(self._close_note_window)
         header_layout.addWidget(self.btn_close)
@@ -1086,17 +1686,18 @@ class CyberStickyNoteWindow(QWidget):
         self._drawer_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._drawer_anim.finished.connect(self._on_drawer_anim_finished)
 
-        # --- 3. Spacious Rich-Text Editor + Ink Overlay ---
+        # --- 3. Spacious Rich-Text Editor with Gliding Neon Caret + Ink Overlay ---
         self.editor_container = QWidget(self.card)
         self.editor_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         editor_stack_layout = QVBoxLayout(self.editor_container)
         editor_stack_layout.setContentsMargins(2, 4, 2, 4)
 
-        self.editor = QTextEdit(self.editor_container)
+        self.editor = SmoothCaretTextEdit(self.editor_container)
         self.editor.setFrameShape(QFrame.Shape.NoFrame)
         self.editor.setFont(QFont("Segoe UI", 11))
         self.editor.document().setDocumentMargin(8)
         self.editor.setPlaceholderText("Take a note...")
+        self.highlighter = CyberNoteHighlighter(self.editor.document(), self.theme["accent"])
         self.editor.textChanged.connect(self._on_editor_text_changed)
         self.editor.cursorPositionChanged.connect(self._sync_format_buttons)
         editor_stack_layout.addWidget(self.editor)
@@ -1105,7 +1706,7 @@ class CyberStickyNoteWindow(QWidget):
         self.ink_canvas.setParent(self.editor_container)
         card_layout.addWidget(self.editor_container, 1)
 
-        # --- 4. Smart Clickable Links Bar (Only shown when a URL/phone is present) ---
+        # --- 4. Animated Smart Clickable Links Bar ---
         self.insights_bar = QWidget(self.card)
         self.insights_layout = QHBoxLayout(self.insights_bar)
         self.insights_layout.setContentsMargins(0, 0, 0, 0)
@@ -1113,7 +1714,7 @@ class CyberStickyNoteWindow(QWidget):
         self.insights_bar.setVisible(False)
         card_layout.addWidget(self.insights_bar)
 
-        # --- 5. Clean Bottom Formatting Bar ---
+        # --- 5. Clean Bottom Formatting Bar with Tactile Ripple Buttons ---
         self.toolbar_frame = QFrame(self.card)
         self.toolbar_frame.setFixedHeight(36)
         tb_layout = QHBoxLayout(self.toolbar_frame)
@@ -1135,9 +1736,9 @@ class CyberStickyNoteWindow(QWidget):
         tb_layout.addStretch(1)
         tb_layout.addWidget(self.btn_ink)
 
-        self.btn_clear_ink = QPushButton("Clear")
-        self.btn_clear_ink.setFixedHeight(26)
-        self.btn_clear_ink.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_clear_ink = AnimatedGlassButton("Clear", self.toolbar_frame, is_close=True)
+        self.btn_clear_ink.setFixedSize(48, 26)
+        self.btn_clear_ink.setFont(QFont("Segoe UI", 9))
         self.btn_clear_ink.setVisible(False)
         self.btn_clear_ink.clicked.connect(self._clear_ink_strokes)
         tb_layout.addWidget(self.btn_clear_ink)
@@ -1154,11 +1755,10 @@ class CyberStickyNoteWindow(QWidget):
 
     def _make_fmt_btn(
         self, text: str, tooltip: str, slot, bold=False, italic=False, underline=False, strike=False, width=32
-    ) -> QPushButton:
-        b = QPushButton(text)
+    ) -> AnimatedGlassButton:
+        b = AnimatedGlassButton(text, self.toolbar_frame, corner_radius=6.0)
         b.setCheckable(True)
         b.setFixedSize(width, 28)
-        b.setCursor(Qt.CursorShape.PointingHandCursor)
         b.setToolTip(tooltip)
         f = QFont("Segoe UI", 10)
         f.setBold(bold)
@@ -1169,10 +1769,12 @@ class CyberStickyNoteWindow(QWidget):
         b.clicked.connect(slot)
         return b
 
-    def _apply_theme(self):
+    def _apply_theme(self, animate: bool = True):
         t = CYBER_THEMES.get(self.theme_name, CYBER_THEMES["Yellow"])
         self.theme = t
-        self.card.set_theme(t)
+        self.card.set_theme(t, animate=animate)
+        self.editor.set_accent(t["accent"])
+        self.highlighter.set_accent(t["accent"])
 
         for k, orb in self.orb_buttons.items():
             orb.set_active(k == self.theme_name)
@@ -1181,67 +1783,14 @@ class CyberStickyNoteWindow(QWidget):
             "QFrame { background-color: rgba(255, 255, 255, 0.05); border-radius: 12px; border: 1px solid rgba(255,255,255,0.08); }"
         )
 
-        hdr_btn_qss = """
-            QPushButton {
-                background: transparent;
-                color: rgba(255, 255, 255, 0.65);
-                border: none;
-                border-radius: 7px;
-                font-size: 14px;
-            }
-            QPushButton:hover {
-                background: rgba(255, 255, 255, 0.10);
-                color: #FFFFFF;
-            }
-        """
-        for b in (self.btn_new, self.btn_hub):
-            b.setStyleSheet(hdr_btn_qss)
+        for b in (self.btn_new, self.btn_hub, self.btn_pin):
+            b.set_accent(t["accent"])
+        self.btn_pin.setChecked(self.is_always_on_top)
+        self.btn_palette.set_accent(t["accent"], custom_text_color=QColor(t["accent"]))
 
-        self.btn_palette.setStyleSheet(
-            f"""
-            QPushButton {{
-                background: transparent;
-                color: {t['accent']};
-                border: none;
-                border-radius: 7px;
-                font-size: 15px;
-            }}
-            QPushButton:hover {{
-                background: rgba(255, 255, 255, 0.10);
-            }}
-            """
-        )
-
-        pin_active_qss = f"""
-            QPushButton {{
-                background: {t['accent_glow'] if self.is_always_on_top else 'transparent'};
-                color: {t['accent'] if self.is_always_on_top else 'rgba(255, 255, 255, 0.55)'};
-                border: none;
-                border-radius: 7px;
-                font-size: 12px;
-            }}
-            QPushButton:hover {{
-                background: rgba(255, 255, 255, 0.12);
-                color: {t['accent']};
-            }}
-        """
-        self.btn_pin.setStyleSheet(pin_active_qss)
-
-        self.btn_close.setStyleSheet(
-            """
-            QPushButton {
-                background: transparent;
-                color: rgba(255, 255, 255, 0.55);
-                border: none;
-                border-radius: 7px;
-                font-size: 13px;
-            }
-            QPushButton:hover {
-                background: rgba(255, 59, 92, 0.85);
-                color: #FFFFFF;
-            }
-            """
-        )
+        for fb in (self.btn_bold, self.btn_italic, self.btn_under, self.btn_strike, self.btn_list, self.btn_ink):
+            fb.set_accent(t["accent"])
+        self.btn_ink.setChecked(self.ink_mode)
 
         self.editor.setStyleSheet(
             f"""
@@ -1285,44 +1834,6 @@ class CyberStickyNoteWindow(QWidget):
             """
         )
 
-        fmt_qss = f"""
-            QPushButton {{
-                background: transparent;
-                color: rgba(255, 255, 255, 0.65);
-                border: none;
-                border-radius: 6px;
-                padding: 0 5px;
-            }}
-            QPushButton:hover {{
-                background: rgba(255, 255, 255, 0.09);
-                color: #FFFFFF;
-            }}
-            QPushButton:checked {{
-                background: {t['accent_glow']};
-                color: {t['accent']};
-            }}
-        """
-        for fb in (self.btn_bold, self.btn_italic, self.btn_under, self.btn_strike, self.btn_list, self.btn_ink):
-            fb.setStyleSheet(fmt_qss)
-
-        self.btn_ink.setChecked(self.ink_mode)
-
-        self.btn_clear_ink.setStyleSheet(
-            """
-            QPushButton {
-                background: rgba(255, 59, 92, 0.18);
-                color: #FF8096;
-                border: none;
-                border-radius: 6px;
-                font-size: 11px;
-                padding: 0 10px;
-            }
-            QPushButton:hover {
-                background: rgba(255, 59, 92, 0.38);
-                color: #FFFFFF;
-            }
-            """
-        )
         self._refresh_insight_chips()
         self.ink_canvas.update()
 
@@ -1432,32 +1943,12 @@ class CyberStickyNoteWindow(QWidget):
         t = self.theme
 
         for ins in insights[:2]:
-            label_txt = ins["InsightContent"]
-            if len(label_txt) > 30:
-                label_txt = label_txt[:28] + "…"
-            icon = "↗" if ins["InsightType"] == "UrlInsight" else "📞"
-            btn = QPushButton(f"{icon}  {label_txt}")
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setFixedHeight(24)
-            btn.setStyleSheet(
-                f"""
-                QPushButton {{
-                    background: {t['accent_glow']};
-                    color: {t['accent']};
-                    border: none;
-                    border-radius: 7px;
-                    font-size: 11px;
-                    padding: 0 10px;
-                }}
-                QPushButton:hover {{
-                    background: {t['accent']};
-                    color: #090B10;
-                }}
-                """
-            )
-            action = ins["LaunchAction"]
-            btn.clicked.connect(lambda checked=False, a=action: webbrowser.open(a))
-            self.insights_layout.addWidget(btn)
+            label_txt = ins["InsightContent"].replace("https://", "").replace("http://", "")
+            if len(label_txt) > 28:
+                label_txt = label_txt[:26] + "…"
+            is_url = ins["InsightType"] == "UrlInsight"
+            pill = AnimatedLinkPill(label_txt, ins["LaunchAction"], t["accent"], is_url=is_url)
+            self.insights_layout.addWidget(pill)
 
         self.insights_layout.addStretch(1)
 
@@ -1483,14 +1974,14 @@ class CyberStickyNoteWindow(QWidget):
         if self.palette_open:
             self._toggle_palette_drawer()
         self.pool.update_note(self.note_id, Theme=theme_key)
-        self._apply_theme()
+        self._apply_theme(animate=True)
         self.app.refresh_hub_cards()
 
     def _toggle_ink_mode(self):
         self.ink_mode = not self.ink_mode
         self.ink_canvas.set_ink_enabled(self.ink_mode)
         self.btn_clear_ink.setVisible(self.ink_mode or bool(self.ink_canvas.strokes))
-        self._apply_theme()
+        self._apply_theme(animate=False)
 
     def _clear_ink_strokes(self):
         self.pool.clear_strokes(self.note_id)
@@ -1503,7 +1994,7 @@ class CyberStickyNoteWindow(QWidget):
         geom = self.geometry()
         self._configure_window_flags()
         self.setGeometry(geom)
-        self._apply_theme()
+        self._apply_theme(animate=False)
         self.show()
         self.app.refresh_hub_cards()
 
@@ -1512,7 +2003,14 @@ class CyberStickyNoteWindow(QWidget):
         self.pool.update_note(self.note_id, IsOpen=0)
         if self.note_id in self.app.open_windows:
             del self.app.open_windows[self.note_id]
-        self.close()
+
+        self._close_anim = QPropertyAnimation(self, b"windowOpacity")
+        self._close_anim.setDuration(140)
+        self._close_anim.setStartValue(self.windowOpacity())
+        self._close_anim.setEndValue(0.0)
+        self._close_anim.setEasingCurve(QEasingCurve.Type.InCubic)
+        self._close_anim.finished.connect(self.close)
+        self._close_anim.start()
         self.app.refresh_hub_cards()
 
     def resizeEvent(self, event):
@@ -1553,7 +2051,7 @@ class CyberStickyNoteWindow(QWidget):
 
 
 # ---------------------------------------------------------------------------
-# 4. Smooth Animated Note Card in Hub
+# 4. Smooth Animated Note Card in Hub (With Tactile Press Bounce & Ripple)
 # ---------------------------------------------------------------------------
 class SmoothNoteCard(QFrame):
     """Spacious, animated note preview card in the main Notes Hub."""
@@ -1566,11 +2064,24 @@ class SmoothNoteCard(QFrame):
         self.theme_name = note_data.get("Theme") or "Yellow"
         self.theme = CYBER_THEMES.get(self.theme_name, CYBER_THEMES["Yellow"])
         self.hover_progress = 0.0
+        self.press_scale = 1.0
+        self.ripple_p = 1.0
+        self.ripple_center = QPointF(0, 0)
 
         self._hover_anim = QVariantAnimation(self)
         self._hover_anim.setDuration(150)
         self._hover_anim.setEasingCurve(QEasingCurve.Type.OutQuad)
         self._hover_anim.valueChanged.connect(self._on_hover_anim)
+
+        self._spring_anim = QVariantAnimation(self)
+        self._spring_anim.setDuration(190)
+        self._spring_anim.setEasingCurve(QEasingCurve.Type.OutBack)
+        self._spring_anim.valueChanged.connect(self._on_spring_anim)
+
+        self._ripple_anim = QVariantAnimation(self)
+        self._ripple_anim.setDuration(320)
+        self._ripple_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._ripple_anim.valueChanged.connect(self._on_ripple_anim)
 
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
@@ -1578,6 +2089,14 @@ class SmoothNoteCard(QFrame):
 
     def _on_hover_anim(self, val):
         self.hover_progress = float(val)
+        self.update()
+
+    def _on_spring_anim(self, val):
+        self.press_scale = float(val)
+        self.update()
+
+    def _on_ripple_anim(self, val):
+        self.ripple_p = float(val)
         self.update()
 
     def _build_card(self):
@@ -1598,25 +2117,10 @@ class SmoothNoteCard(QFrame):
         top_row.addWidget(lbl_meta)
         top_row.addStretch(1)
 
-        btn_del = QPushButton("✕")
-        btn_del.setFixedSize(24, 24)
-        btn_del.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_del = AnimatedGlassButton("✕", self, is_close=True, corner_radius=6.0)
+        btn_del.setFixedSize(26, 24)
+        btn_del.setFont(QFont("Segoe UI", 9))
         btn_del.setToolTip("Delete Note")
-        btn_del.setStyleSheet(
-            """
-            QPushButton {
-                background: transparent;
-                color: rgba(255, 255, 255, 0.35);
-                border: none;
-                border-radius: 6px;
-                font-size: 11px;
-            }
-            QPushButton:hover {
-                background: rgba(255, 59, 92, 0.25);
-                color: #FF4D6A;
-            }
-            """
-        )
         btn_del.clicked.connect(lambda: self.app.delete_note(self.note_id))
         top_row.addWidget(btn_del)
         layout.addLayout(top_row)
@@ -1657,14 +2161,40 @@ class SmoothNoteCard(QFrame):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            self.app.open_note_window(self.note_id)
+            self.ripple_center = event.position()
+            self._spring_anim.stop()
+            self._spring_anim.setStartValue(1.0)
+            self._spring_anim.setEndValue(0.97)
+            self._spring_anim.start()
+
+            self._ripple_anim.stop()
+            self._ripple_anim.setStartValue(0.0)
+            self._ripple_anim.setEndValue(1.0)
+            self._ripple_anim.start()
             event.accept()
             return
         super().mousePressEvent(event)
 
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._spring_anim.stop()
+            self._spring_anim.setStartValue(self.press_scale)
+            self._spring_anim.setEndValue(1.0)
+            self._spring_anim.start()
+            self.app.open_note_window(self.note_id)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+        cx, cy = self.width() / 2.0, self.height() / 2.0
+        painter.translate(cx, cy)
+        painter.scale(self.press_scale, self.press_scale)
+        painter.translate(-cx, -cy)
+
         rect = QRectF(self.rect()).adjusted(1.0, 1.0, -1.0, -1.0)
         path = QPainterPath()
         path.addRoundedRect(rect, 13.0, 13.0)
@@ -1672,6 +2202,18 @@ class SmoothNoteCard(QFrame):
         bg = QColor(self.theme["card_bg"])
         bg.setAlpha(int(205 + 42 * self.hover_progress))
         painter.fillPath(path, bg)
+
+        if 0.0 < self.ripple_p < 1.0:
+            painter.save()
+            painter.setClipPath(path)
+            max_r = max(self.width(), self.height()) * 1.1
+            cur_r = max_r * self.ripple_p
+            rip = QColor(self.theme["accent"])
+            rip.setAlpha(int(55 * (1.0 - self.ripple_p)))
+            painter.setBrush(rip)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawEllipse(self.ripple_center, cur_r, cur_r)
+            painter.restore()
 
         # Left 5px neon accent bar
         painter.save()
@@ -1847,7 +2389,7 @@ class CyberNotesApp:
         outer.setContentsMargins(12, 12, 12, 12)
 
         self.hub_card = GlassNoteSurface(self.hub)
-        self.hub_card.set_theme(CYBER_THEMES["Blue"])
+        self.hub_card.set_theme(CYBER_THEMES["Blue"], animate=False)
         self.hub_card.set_focused(True)
 
         shadow = QGraphicsDropShadowEffect(self.hub_card)
@@ -1872,50 +2414,24 @@ class CyberNotesApp:
 
         top_bar.addStretch(1)
 
-        btn_new = QPushButton("＋  New Note")
-        btn_new.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_new.setFixedHeight(32)
+        btn_new = AnimatedGlassButton("＋  New Note", self.hub_card, is_primary=True, corner_radius=8.0)
+        btn_new.set_accent("#00F0FF")
+        btn_new.setFixedSize(112, 32)
         btn_new.setFont(QFont("Segoe UI Semibold", 10))
-        btn_new.setStyleSheet(
-            """
-            QPushButton {
-                background: #00F0FF;
-                color: #090B10;
-                border: none;
-                border-radius: 8px;
-                padding: 0 14px;
-            }
-            QPushButton:hover {
-                background: #5CF6FF;
-            }
-            """
-        )
         btn_new.clicked.connect(self.spawn_new_note)
         top_bar.addWidget(btn_new)
 
-        btn_min = QPushButton("—")
+        btn_min = AnimatedGlassButton("—", self.hub_card)
         btn_min.setFixedSize(30, 30)
-        btn_min.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_min.setFont(QFont("Segoe UI", 10))
         btn_min.setToolTip("Minimize")
-        btn_min.setStyleSheet(
-            """
-            QPushButton { background: transparent; color: rgba(255,255,255,0.60); border: none; border-radius: 7px; }
-            QPushButton:hover { background: rgba(255,255,255,0.10); color: #FFFFFF; }
-            """
-        )
         btn_min.clicked.connect(self.hub.showMinimized)
         top_bar.addWidget(btn_min)
 
-        btn_close = QPushButton("✕")
+        btn_close = AnimatedGlassButton("✕", self.hub_card, is_close=True)
         btn_close.setFixedSize(30, 30)
-        btn_close.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_close.setFont(QFont("Segoe UI", 10))
         btn_close.setToolTip("Quit CyberNotes")
-        btn_close.setStyleSheet(
-            """
-            QPushButton { background: transparent; color: rgba(255,255,255,0.60); border: none; border-radius: 7px; }
-            QPushButton:hover { background: rgba(255,59,92,0.85); color: #FFFFFF; }
-            """
-        )
         btn_close.clicked.connect(self.qt_app.quit)
         top_bar.addWidget(btn_close)
         layout.addLayout(top_bar)
@@ -1993,25 +2509,10 @@ class CyberNotesApp:
 
         footer.addStretch(1)
 
-        btn_import = QPushButton("Import Sticky Notes")
-        btn_import.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_import.setFixedHeight(26)
+        btn_import = AnimatedGlassButton("Import Sticky Notes", self.hub_card, corner_radius=6.0)
+        btn_import.set_accent("#00F0FF")
+        btn_import.setFixedSize(130, 26)
         btn_import.setFont(QFont("Segoe UI", 9))
-        btn_import.setStyleSheet(
-            """
-            QPushButton {
-                background: rgba(255, 255, 255, 0.05);
-                color: rgba(255, 255, 255, 0.65);
-                border: none;
-                border-radius: 6px;
-                padding: 0 10px;
-            }
-            QPushButton:hover {
-                background: rgba(0, 240, 255, 0.15);
-                color: #00F0FF;
-            }
-            """
-        )
         btn_import.clicked.connect(self._import_ms_notes_dialog)
         footer.addWidget(btn_import)
         layout.addLayout(footer)
@@ -2063,7 +2564,7 @@ class CyberNotesApp:
         used_themes = [n.get("Theme") for n in self.pool.get_all_notes()]
         next_theme = THEME_ORDER[len(used_themes) % len(THEME_ORDER)]
         idx = len(self.open_windows)
-        pos = f"385x350+{540 + (idx % 3) * 40}+{95 + (idx % 4) * 40}"
+        pos = f"405x395+{540 + (idx % 3) * 40}+{95 + (idx % 4) * 40}"
         note = self.pool.create_note(text="", theme=next_theme, is_open=1, window_position=pos)
         self.open_note_window(note["Id"])
         self.refresh_hub_cards()
