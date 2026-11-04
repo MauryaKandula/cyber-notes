@@ -1,0 +1,15 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+build/
+dist/
+
+# Runtime user databases & logs
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.db
+*.log
+launch_cyber_notes.vbs
