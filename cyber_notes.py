@@ -987,16 +987,16 @@ class CyberStickyNoteWindow(QWidget):
         m = re.match(r"^(\d+)x(\d+)\+(-?\d+)\+(-?\d+)$", str(pos_str).strip())
         if m:
             w, h, x, y = map(int, m.groups())
-            w = max(320, min(w, 1000))
-            h = max(280, min(h, 1000))
+            w = max(340, min(w, 1000))
+            h = max(320, min(h, 1000))
             x = max(20, min(x, 2200))
             y = max(20, min(y, 1200))
             self.setGeometry(x, y, w, h)
         else:
             idx = len(self.app.open_windows)
-            x = 540 + (idx % 2) * 400
-            y = 85 + (idx // 2) * 380
-            self.setGeometry(x, y, 385, 360)
+            x = 540 + (idx % 2) * 415
+            y = 80 + (idx // 2) * 410
+            self.setGeometry(x, y, 400, 395)
 
     def _build_ui(self):
         outer = QVBoxLayout(self)
@@ -1094,7 +1094,8 @@ class CyberStickyNoteWindow(QWidget):
 
         self.editor = QTextEdit(self.editor_container)
         self.editor.setFrameShape(QFrame.Shape.NoFrame)
-        self.editor.setFont(QFont("Segoe UI", 12))
+        self.editor.setFont(QFont("Segoe UI", 11))
+        self.editor.document().setDocumentMargin(8)
         self.editor.setPlaceholderText("Take a note...")
         self.editor.textChanged.connect(self._on_editor_text_changed)
         self.editor.cursorPositionChanged.connect(self._sync_format_buttons)
@@ -1253,19 +1254,23 @@ class CyberStickyNoteWindow(QWidget):
             }}
             QScrollBar:vertical {{
                 background: transparent;
-                width: 6px;
+                width: 5px;
                 margin: 4px 0 4px 0;
             }}
             QScrollBar::handle:vertical {{
-                background: rgba(255, 255, 255, 0.16);
+                background: rgba(255, 255, 255, 0.18);
                 min-height: 28px;
-                border-radius: 3px;
+                border-radius: 2px;
             }}
             QScrollBar::handle:vertical:hover {{
                 background: {t['accent']};
             }}
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
                 height: 0px;
+                background: transparent;
+            }}
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+                background: transparent;
             }}
             """
         )
@@ -1568,8 +1573,7 @@ class SmoothNoteCard(QFrame):
         self._hover_anim.valueChanged.connect(self._on_hover_anim)
 
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setMinimumHeight(96)
-        self.setMaximumHeight(140)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         self._build_card()
 
     def _on_hover_anim(self, val):
@@ -1578,8 +1582,8 @@ class SmoothNoteCard(QFrame):
 
     def _build_card(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 12, 14, 12)
-        layout.setSpacing(6)
+        layout.setContentsMargins(18, 14, 16, 16)
+        layout.setSpacing(8)
 
         top_row = QHBoxLayout()
         top_row.setContentsMargins(0, 0, 0, 0)
@@ -1590,7 +1594,7 @@ class SmoothNoteCard(QFrame):
 
         lbl_meta = QLabel(ts_str)
         lbl_meta.setFont(QFont("Segoe UI", 9))
-        lbl_meta.setStyleSheet(f"color: {self.theme['muted']}; background: transparent;")
+        lbl_meta.setStyleSheet(f"color: {self.theme['accent']}; background: transparent;")
         top_row.addWidget(lbl_meta)
         top_row.addStretch(1)
 
@@ -1617,16 +1621,24 @@ class SmoothNoteCard(QFrame):
         top_row.addWidget(btn_del)
         layout.addLayout(top_row)
 
-        preview = (self.note_data.get("Text") or "").strip()
-        if not preview:
+        raw_preview = (self.note_data.get("Text") or "").strip()
+        if not raw_preview:
             preview = "Empty note..."
-        elif len(preview) > 155:
-            preview = preview[:152] + "…"
+        else:
+            lines = [ln.strip() for ln in raw_preview.splitlines() if ln.strip()]
+            if len(lines) > 3:
+                preview = "\n".join(lines[:3]) + " …"
+            else:
+                preview = "\n".join(lines)
+            if len(preview) > 160:
+                preview = preview[:157].rsplit(" ", 1)[0] + " …"
 
         lbl_body = QLabel(preview)
         lbl_body.setWordWrap(True)
-        lbl_body.setFont(QFont("Segoe UI", 11))
-        lbl_body.setStyleSheet(f"color: {self.theme['body_fg']}; background: transparent;")
+        lbl_body.setFont(QFont("Segoe UI", 10))
+        lbl_body.setStyleSheet(
+            f"color: {self.theme['body_fg']}; background: transparent; padding-bottom: 2px;"
+        )
         layout.addWidget(lbl_body)
 
     def enterEvent(self, event):
@@ -1765,7 +1777,7 @@ class CyberNotesApp:
             theme="Yellow",
             is_open=1,
             is_always_on_top=1,
-            window_position="385x350+535+85",
+            window_position="405x395+535+80",
         )
         self.pool.create_note(
             text=(
@@ -1776,7 +1788,7 @@ class CyberNotesApp:
             theme="Blue",
             is_open=1,
             is_always_on_top=0,
-            window_position="385x320+535+460",
+            window_position="405x355+535+495",
         )
 
     def _setup_system_tray(self):
@@ -1955,6 +1967,10 @@ class CyberNotesApp:
             }
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
                 height: 0px;
+                background: transparent;
+            }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+                background: transparent;
             }
             """
         )
