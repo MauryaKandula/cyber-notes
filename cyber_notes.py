@@ -189,7 +189,8 @@ class PlumStoragePool:
 
     def _init_schema(self):
         cur = self.conn.cursor()
-        cur.execute("PRAGMA journal_mode=WAL")
+        cur.execute("PRAGMA journal_mode=DELETE")
+        cur.execute("PRAGMA synchronous=FULL")
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS "Note" (
@@ -1882,9 +1883,13 @@ class CyberStickyNoteWindow(QWidget):
     def _on_editor_text_changed(self):
         if self._loading_content:
             return
-        self._save_text_timer.start()
+        self._commit_text_to_db()
 
     def _commit_text_to_db(self):
+        if self._loading_content:
+            return
+        if self._save_text_timer.isActive():
+            self._save_text_timer.stop()
         plain = self.editor.toPlainText()
         html = self.editor.toHtml()
         self.pool.update_note(self.note_id, Text=plain, RichSpansJson=html)
@@ -1892,6 +1897,8 @@ class CyberStickyNoteWindow(QWidget):
         self.app.refresh_hub_cards()
 
     def _commit_geometry_to_db(self):
+        if self._save_geom_timer.isActive():
+            self._save_geom_timer.stop()
         g = self.geometry()
         pos_str = f"{g.width()}x{g.height()}+{g.x()}+{g.y()}"
         self.pool.update_note(self.note_id, WindowPosition=pos_str)
@@ -2027,8 +2034,11 @@ class CyberStickyNoteWindow(QWidget):
 
     def _close_note_window(self):
         if getattr(self.app, "_is_quitting", False):
+            self._commit_text_to_db()
+            self._commit_geometry_to_db()
             self.close()
             return
+        self._commit_text_to_db()
         self._commit_geometry_to_db()
         self.pool.update_note(self.note_id, IsOpen=0)
         if self.note_id in self.app.open_windows:
@@ -2045,12 +2055,13 @@ class CyberStickyNoteWindow(QWidget):
 
     def closeEvent(self, event):
         """
-        If the user presses Alt+F4 on a sticky note window, hide/close just this note.
-        If the entire application is quitting/shutting down, preserve IsOpen=1 in DB
-        so all open sticky notes automatically reappear on next computer boot!
+        If the user presses Alt+F4 on a sticky note window, save and hide just this note.
+        If the entire application is quitting/shutting down, save text & geometry and
+        preserve IsOpen=1 in DB so all open sticky notes automatically reappear on next open!
         """
+        self._commit_text_to_db()
+        self._commit_geometry_to_db()
         if getattr(self.app, "_is_quitting", False):
-            self._commit_geometry_to_db()
             event.accept()
             return
         event.ignore()
@@ -2377,6 +2388,18 @@ class CyberNotesApp:
         if not self.startup_mode or not self.open_windows:
             self._animate_hub_open()
 
+    def _restore_open_note_windows(self):
+        all_notes = self.pool.get_all_notes()
+        any_open = False
+        for n in all_notes:
+            if n.get("IsOpen", 0):
+                self.open_note_window(n["Id"])
+                any_open = True
+        # If notes exist in the database, make sure the most recent sticky note opens
+        # automatically if none were marked IsOpen=1, so the user always sees their notes!
+        if not any_open and all_notes and not self.startup_mode:
+            self.open_note_window(all_notes[0]["Id"])
+
     def _on_about_to_quit(self):
         self._is_quitting = True
         for win in list(self.open_windows.values()):
@@ -2464,6 +2487,12 @@ class CyberNotesApp:
         Smoothly fades out and hides the main All Notes Hub window while keeping
         all open Sticky Notes live and interactive on the desktop.
         """
+        for win in list(self.open_windows.values()):
+            try:
+                win._commit_text_to_db()
+                win._commit_geometry_to_db()
+            except Exception:
+                pass
         if not self.hub.isVisible():
             return
         self._hub_close_anim = QPropertyAnimation(self.hub, b"windowOpacity")
@@ -2726,11 +2755,6 @@ class CyberNotesApp:
 
         self.cards_layout.addStretch(1)
 
-    def _restore_open_note_windows(self):
-        for n in self.pool.get_all_notes():
-            if n.get("IsOpen", 0):
-                self.open_note_window(n["Id"])
-
     def open_note_window(self, note_id: str):
         if note_id in self.open_windows:
             win = self.open_windows[note_id]
@@ -2768,6 +2792,13 @@ class CyberNotesApp:
         self.refresh_hub_cards()
 
     def show_hub(self):
+        for win in list(self.open_windows.values()):
+            try:
+                win._commit_text_to_db()
+                win._commit_geometry_to_db()
+            except Exception:
+                pass
+        self.refresh_hub_cards()
         self.hub.setWindowOpacity(1.0)
         self.hub.showNormal()
         self.hub.raise_()
