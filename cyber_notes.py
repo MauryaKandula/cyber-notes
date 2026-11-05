@@ -2383,21 +2383,30 @@ class CyberNotesApp:
         self.refresh_hub_cards()
         self._restore_open_note_windows()
 
-        # In --startup mode (when computer boots), restore open sticky notes directly
-        # onto the desktop without popping up the main Hub window (unless no notes are open).
-        if not self.startup_mode or not self.open_windows:
+        # By default (both on Windows Startup and when launching CyberNotes),
+        # ONLY show the sticky note(s) on the desktop — keep the main "All Notes"
+        # Hub window hidden until the user clicks ☷ (All Notes) or the tray icon!
+        if "--show-hub" in sys.argv:
             self._animate_hub_open()
 
     def _restore_open_note_windows(self):
         all_notes = self.pool.get_all_notes()
-        any_open = False
-        for n in all_notes:
-            if n.get("IsOpen", 0):
+        if not all_notes:
+            return
+        # If the user has pinned ("stuck") note(s), or open note(s), restore them.
+        # On startup (--startup), if any notes are pinned (IsAlwaysOnTop=1), open ONLY
+        # the pinned/stuck sticky notes; otherwise open the primary/most-recent open note.
+        pinned_notes = [n for n in all_notes if n.get("IsAlwaysOnTop", 0)]
+        open_notes = [n for n in all_notes if n.get("IsOpen", 0)]
+
+        if self.startup_mode and pinned_notes:
+            for n in pinned_notes:
                 self.open_note_window(n["Id"])
-                any_open = True
-        # If notes exist in the database, make sure the most recent sticky note opens
-        # automatically if none were marked IsOpen=1, so the user always sees their notes!
-        if not any_open and all_notes and not self.startup_mode:
+        elif open_notes:
+            for n in open_notes:
+                self.open_note_window(n["Id"])
+        else:
+            # Always ensure the primary (most recent) sticky note appears
             self.open_note_window(all_notes[0]["Id"])
 
     def _on_about_to_quit(self):
@@ -2480,7 +2489,10 @@ class CyberNotesApp:
             except Exception:
                 pass
             self._restore_open_note_windows()
-            self.show_hub()
+            for win in self.open_windows.values():
+                win.showNormal()
+                win.raise_()
+                win.activateWindow()
 
     def hide_hub(self):
         """
