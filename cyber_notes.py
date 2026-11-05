@@ -1550,6 +1550,10 @@ class CyberStickyNoteWindow(QWidget):
         self.palette_open: bool = False
         self._loading_content: bool = False
 
+        self.setWindowTitle("CyberNotes")
+        if hasattr(app_controller, "app_icon"):
+            self.setWindowIcon(app_controller.app_icon)
+
         self._save_text_timer = QTimer(self)
         self._save_text_timer.setSingleShot(True)
         self._save_text_timer.setInterval(250)
@@ -2325,6 +2329,10 @@ class CyberNotesApp:
         self._is_quitting: bool = False
 
         self.qt_app = QApplication.instance() or QApplication(sys.argv)
+        self.qt_app.setApplicationName("CyberNotes")
+        self.qt_app.setApplicationDisplayName("CyberNotes")
+        self.qt_app.setOrganizationName("Kandula Paul Saketh Maurya")
+        self.qt_app.setApplicationVersion(__version__)
         self.app_icon = create_cybernotes_icon()
         self.qt_app.setWindowIcon(self.app_icon)
         self.qt_app.setQuitOnLastWindowClosed(False)
@@ -2382,14 +2390,18 @@ class CyberNotesApp:
         try:
             import winreg
 
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            native_exe = os.path.join(script_dir, "CyberNotes.exe")
             script_path = os.path.abspath(__file__)
-            pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
-            if not os.path.exists(pythonw):
-                pythonw = sys.executable
 
-            if getattr(sys, "frozen", False):
+            if os.path.exists(native_exe):
+                cmd = f'"{native_exe}" --startup'
+            elif getattr(sys, "frozen", False):
                 cmd = f'"{sys.executable}" --startup'
             else:
+                pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+                if not os.path.exists(pythonw):
+                    pythonw = sys.executable
                 cmd = f'"{pythonw}" "{script_path}" --startup'
 
             with winreg.OpenKey(
