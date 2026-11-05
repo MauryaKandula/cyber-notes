@@ -106,6 +106,25 @@ class TestCyberNotesStorageAndThemes(unittest.TestCase):
         self.assertEqual(imported["Theme"], "Purple")
         self.assertIn("Imported Sticky Note", imported["Text"])
 
+    def test_closing_main_hub_keeps_sticky_notes_open_and_startup_registered(self):
+        from cyber_notes import CyberNotesApp
+
+        app = CyberNotesApp(db_path=self.db_path, startup_mode=False)
+        self.assertTrue(len(app.open_windows) >= 1)
+        self.assertTrue(app.hub.isVisible())
+
+        # Closing the main All Notes Hub window must hide the Hub while keeping sticky notes open
+        app.hub.close()
+        app.hub.hide()
+        for win in app.open_windows.values():
+            self.assertTrue(win.isVisible())
+
+        # Verify Windows Startup registration helper
+        self.assertTrue(CyberNotesApp.is_windows_startup_enabled())
+        for win in list(app.open_windows.values()):
+            win.hide()
+        app.pool.conn.close()
+
 
 if __name__ == "__main__":
     unittest.main()

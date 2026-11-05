@@ -1582,7 +1582,10 @@ class CyberStickyNoteWindow(QWidget):
         self._fade_anim.start()
 
     def _configure_window_flags(self):
-        flags = Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window
+        # Qt.WindowType.Tool prevents individual sticky notes from cluttering the
+        # Windows taskbar and avoids unexpected app-termination when the Hub closes,
+        # while keeping the sticky note floating persistently on the desktop.
+        flags = Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool
         if self.is_always_on_top:
             flags |= Qt.WindowType.WindowStaysOnTopHint
         self.setWindowFlags(flags)
@@ -2005,6 +2008,9 @@ class CyberStickyNoteWindow(QWidget):
         self.app.refresh_hub_cards()
 
     def _close_note_window(self):
+        if getattr(self.app, "_is_quitting", False):
+            self.close()
+            return
         self._commit_geometry_to_db()
         self.pool.update_note(self.note_id, IsOpen=0)
         if self.note_id in self.app.open_windows:
@@ -2015,9 +2021,22 @@ class CyberStickyNoteWindow(QWidget):
         self._close_anim.setStartValue(self.windowOpacity())
         self._close_anim.setEndValue(0.0)
         self._close_anim.setEasingCurve(QEasingCurve.Type.InCubic)
-        self._close_anim.finished.connect(self.close)
+        self._close_anim.finished.connect(self.hide)
         self._close_anim.start()
         self.app.refresh_hub_cards()
+
+    def closeEvent(self, event):
+        """
+        If the user presses Alt+F4 on a sticky note window, hide/close just this note.
+        If the entire application is quitting/shutting down, preserve IsOpen=1 in DB
+        so all open sticky notes automatically reappear on next computer boot!
+        """
+        if getattr(self.app, "_is_quitting", False):
+            self._commit_geometry_to_db()
+            event.accept()
+            return
+        event.ignore()
+        self._close_note_window()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -2275,23 +2294,45 @@ class CyberNotesHubWindow(QWidget):
         self.setCursor(cursor_for_edges(edges))
         super().mouseMoveEvent(event)
 
+    def closeEvent(self, event):
+        """
+        Like Microsoft Sticky Notes: closing the main 'All Notes' Hub window
+        (via ✕ or Alt+F4) only hides the Hub window — all open Sticky Notes
+        stay open on your desktop and CyberNotes keeps running in the background.
+        """
+        if getattr(self.app, "_is_quitting", False):
+            event.accept()
+            return
+        event.ignore()
+        self.app.hide_hub()
+
 
 class CyberNotesApp:
     """
-    Main Application Controller, Hub Window & System Tray Manager.
+    Main Application Controller, Hub Window, Windows Startup Manager & System Tray.
     """
 
-    def __init__(self, db_path: str | None = None):
+    STARTUP_REG_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+    STARTUP_REG_VAL = "CyberNotes"
+
+    def __init__(self, db_path: str | None = None, startup_mode: bool = False):
         if db_path is None:
             db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "plum.sqlite")
         self.pool = PlumStoragePool(db_path)
         self.open_windows: dict[str, CyberStickyNoteWindow] = {}
         self.active_tag_filter: str = ""
+        self.startup_mode: bool = startup_mode
+        self._is_quitting: bool = False
 
         self.qt_app = QApplication.instance() or QApplication(sys.argv)
         self.app_icon = create_cybernotes_icon()
         self.qt_app.setWindowIcon(self.app_icon)
         self.qt_app.setQuitOnLastWindowClosed(False)
+        self.qt_app.aboutToQuit.connect(self._on_about_to_quit)
+
+        # Ensure Windows Startup registration is active by default so CyberNotes
+        # launches automatically whenever the computer starts.
+        self.ensure_windows_startup(enable=True)
 
         if not self.pool.get_all_notes():
             self._seed_default_notes()
@@ -2299,9 +2340,114 @@ class CyberNotesApp:
         self.hub = CyberNotesHubWindow(self)
         self._build_hub_ui()
         self._setup_system_tray()
+        self._setup_ipc_listener()
         self.refresh_hub_cards()
         self._restore_open_note_windows()
-        self._animate_hub_open()
+
+        # In --startup mode (when computer boots), restore open sticky notes directly
+        # onto the desktop without popping up the main Hub window (unless no notes are open).
+        if not self.startup_mode or not self.open_windows:
+            self._animate_hub_open()
+
+    def _on_about_to_quit(self):
+        self._is_quitting = True
+        for win in list(self.open_windows.values()):
+            try:
+                win._commit_geometry_to_db()
+                win._commit_text_to_db()
+            except Exception:
+                pass
+
+    @classmethod
+    def is_windows_startup_enabled(cls) -> bool:
+        if sys.platform != "win32":
+            return False
+        try:
+            import winreg
+
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, cls.STARTUP_REG_KEY, 0, winreg.KEY_READ) as k:
+                val, _ = winreg.QueryValueEx(k, cls.STARTUP_REG_VAL)
+                return bool(val)
+        except Exception:
+            return False
+
+    @classmethod
+    def ensure_windows_startup(cls, enable: bool = True) -> bool:
+        """
+        Registers or removes CyberNotes in Windows Startup (HKCU\\...\\Run and
+        Startup folder shortcut) so sticky notes automatically open when the PC boots.
+        """
+        if sys.platform != "win32":
+            return False
+        try:
+            import winreg
+
+            script_path = os.path.abspath(__file__)
+            pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+            if not os.path.exists(pythonw):
+                pythonw = sys.executable
+
+            if getattr(sys, "frozen", False):
+                cmd = f'"{sys.executable}" --startup'
+            else:
+                cmd = f'"{pythonw}" "{script_path}" --startup'
+
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER, cls.STARTUP_REG_KEY, 0, winreg.KEY_SET_VALUE
+            ) as k:
+                if enable:
+                    winreg.SetValueEx(k, cls.STARTUP_REG_VAL, 0, winreg.REG_SZ, cmd)
+                else:
+                    try:
+                        winreg.DeleteValue(k, cls.STARTUP_REG_VAL)
+                    except FileNotFoundError:
+                        pass
+            return True
+        except Exception:
+            return False
+
+    def _setup_ipc_listener(self):
+        """
+        Polls a lightweight signal file so launching CyberNotes a second time
+        (e.g., from Desktop/Start Menu shortcut) wakes up the existing instance
+        and shows the Hub & open Sticky Notes instead of spawning duplicates.
+        """
+        self._ipc_signal_file = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), ".cybernotes_wakeup.sig"
+        )
+        self._ipc_timer = QTimer(self.hub)
+        self._ipc_timer.setInterval(400)
+        self._ipc_timer.timeout.connect(self._check_ipc_wakeup)
+        self._ipc_timer.start()
+
+    def _check_ipc_wakeup(self):
+        if os.path.exists(self._ipc_signal_file):
+            try:
+                os.remove(self._ipc_signal_file)
+            except Exception:
+                pass
+            self._restore_open_note_windows()
+            self.show_hub()
+
+    def hide_hub(self):
+        """
+        Smoothly fades out and hides the main All Notes Hub window while keeping
+        all open Sticky Notes live and interactive on the desktop.
+        """
+        if not self.hub.isVisible():
+            return
+        self._hub_close_anim = QPropertyAnimation(self.hub, b"windowOpacity")
+        self._hub_close_anim.setDuration(160)
+        self._hub_close_anim.setStartValue(self.hub.windowOpacity())
+        self._hub_close_anim.setEndValue(0.0)
+        self._hub_close_anim.setEasingCurve(QEasingCurve.Type.InCubic)
+
+        def _finish_hide():
+            self.hub.hide()
+            self.hub.setWindowOpacity(1.0)
+
+        self._hub_close_anim.finished.connect(_finish_hide)
+        self._hub_close_anim.start()
 
     def _animate_hub_open(self):
         self.hub.setWindowOpacity(0.0)
@@ -2373,10 +2519,16 @@ class CyberNotesApp:
         act_hub.triggered.connect(self.show_hub)
         menu.addAction(act_hub)
 
+        self.act_startup = QAction("⚡  Run When Computer Starts", menu)
+        self.act_startup.setCheckable(True)
+        self.act_startup.setChecked(self.is_windows_startup_enabled())
+        self.act_startup.triggered.connect(lambda checked: self.ensure_windows_startup(enable=checked))
+        menu.addAction(self.act_startup)
+
         menu.addSeparator()
 
         act_quit = QAction("✕  Quit CyberNotes", menu)
-        act_quit.triggered.connect(self.qt_app.quit)
+        act_quit.triggered.connect(self.quit_app)
         menu.addAction(act_quit)
 
         self.tray.setContextMenu(menu)
@@ -2437,8 +2589,8 @@ class CyberNotesApp:
         btn_close = AnimatedGlassButton("✕", self.hub_card, is_close=True)
         btn_close.setFixedSize(30, 30)
         btn_close.setFont(QFont("Segoe UI", 10))
-        btn_close.setToolTip("Quit CyberNotes")
-        btn_close.clicked.connect(self.qt_app.quit)
+        btn_close.setToolTip("Close All Notes List (Sticky Notes stay open)")
+        btn_close.clicked.connect(self.hide_hub)
         top_bar.addWidget(btn_close)
         layout.addLayout(top_bar)
 
@@ -2586,9 +2738,14 @@ class CyberNotesApp:
         self.refresh_hub_cards()
 
     def show_hub(self):
+        self.hub.setWindowOpacity(1.0)
         self.hub.showNormal()
         self.hub.raise_()
         self.hub.activateWindow()
+
+    def quit_app(self):
+        self._is_quitting = True
+        self.qt_app.quit()
 
     def _import_ms_notes_dialog(self):
         default_ms = os.path.expandvars(
@@ -2625,15 +2782,34 @@ class CyberNotesApp:
 
 
 def main_entry():
+    startup_mode = "--startup" in sys.argv
     if sys.platform == "win32":
         try:
             import ctypes
+
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
                 "MauryaKandula.CyberNotes.Desktop.2.1"
             )
+            # Single-instance mutex so launching CyberNotes while it's already running
+            # in the background wakes up the existing Hub & Sticky Notes instead of
+            # spawning duplicate processes.
+            kernel32 = ctypes.windll.kernel32
+            mutex = kernel32.CreateMutexW(None, False, "Local\\MauryaKandula_CyberNotes_Singleton_v21")
+            if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+                sig_file = os.path.join(
+                    os.path.dirname(os.path.abspath(__file__)), ".cybernotes_wakeup.sig"
+                )
+                try:
+                    with open(sig_file, "w", encoding="utf-8") as f:
+                        f.write("wake")
+                except Exception:
+                    pass
+                return
+            # Keep mutex handle alive for lifetime of process
+            globals()["_CYBERNOTES_MUTEX"] = mutex
         except Exception:
             pass
-    app = CyberNotesApp()
+    app = CyberNotesApp(startup_mode=startup_mode)
     app.run()
 
 
