@@ -1,15 +1,18 @@
-# Byte-compiled / cache
+# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
-*.egg-info/
-build/
-dist/
 
-# Runtime user databases & logs
+# User runtime databases, WAL/SHM journals, logs & wakeup signals
 *.sqlite
-*.sqlite-wal
 *.sqlite-shm
+*.sqlite-wal
 *.db
 *.log
-launch_cyber_notes.vbs
+*.sig
+
+# Build / packaging artifacts
+build/
+dist/
+*.egg-info/
+*.spec

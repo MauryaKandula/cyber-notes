@@ -26,6 +26,7 @@ __license__ = "MIT"
 import json
 import os
 import re
+import shutil
 import sqlite3
 import sys
 import time
@@ -33,7 +34,20 @@ import uuid
 import webbrowser
 from datetime import datetime
 
-LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cyber_notes.log")
+
+def get_appdata_dir() -> str:
+    """
+    Returns %LOCALAPPDATA%\\CyberNotes so user notes, logs, and IPC locks live
+    in standard OS AppData and never pollute the source/repository directory.
+    """
+    base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    path = os.path.join(base, "CyberNotes")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+APPDATA_DIR = get_appdata_dir()
+LOG_FILE = os.path.join(APPDATA_DIR, "cyber_notes.log")
 try:
     _log_f = open(LOG_FILE, "a", encoding="utf-8", buffering=1)
     if sys.stdout is None:
@@ -2321,7 +2335,13 @@ class CyberNotesApp:
 
     def __init__(self, db_path: str | None = None, startup_mode: bool = False):
         if db_path is None:
-            db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "plum.sqlite")
+            db_path = os.path.join(APPDATA_DIR, "plum.sqlite")
+            legacy_db = os.path.join(os.path.dirname(os.path.abspath(__file__)), "plum.sqlite")
+            if not os.path.exists(db_path) and os.path.exists(legacy_db):
+                try:
+                    shutil.copy2(legacy_db, db_path)
+                except Exception:
+                    pass
         self.pool = PlumStoragePool(db_path)
         self.open_windows: dict[str, CyberStickyNoteWindow] = {}
         self.active_tag_filter: str = ""
@@ -2424,9 +2444,7 @@ class CyberNotesApp:
         (e.g., from Desktop/Start Menu shortcut) wakes up the existing instance
         and shows the Hub & open Sticky Notes instead of spawning duplicates.
         """
-        self._ipc_signal_file = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), ".cybernotes_wakeup.sig"
-        )
+        self._ipc_signal_file = os.path.join(APPDATA_DIR, ".cybernotes_wakeup.sig")
         self._ipc_timer = QTimer(self.hub)
         self._ipc_timer.setInterval(400)
         self._ipc_timer.timeout.connect(self._check_ipc_wakeup)
@@ -2808,9 +2826,7 @@ def main_entry():
             kernel32 = ctypes.windll.kernel32
             mutex = kernel32.CreateMutexW(None, False, "Local\\MauryaKandula_CyberNotes_Singleton_v21")
             if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
-                sig_file = os.path.join(
-                    os.path.dirname(os.path.abspath(__file__)), ".cybernotes_wakeup.sig"
-                )
+                sig_file = os.path.join(APPDATA_DIR, ".cybernotes_wakeup.sig")
                 try:
                     with open(sig_file, "w", encoding="utf-8") as f:
                         f.write("wake")
@@ -2831,7 +2847,7 @@ if __name__ == "__main__":
     except Exception as e:
         import traceback
 
-        log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "crash.log")
+        log_path = os.path.join(APPDATA_DIR, "crash.log")
         with open(log_path, "w", encoding="utf-8") as f:
             traceback.print_exc(file=f)
         raise
