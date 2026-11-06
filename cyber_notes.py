@@ -189,8 +189,11 @@ class PlumStoragePool:
 
     def _init_schema(self):
         cur = self.conn.cursor()
-        cur.execute("PRAGMA journal_mode=DELETE")
-        cur.execute("PRAGMA synchronous=FULL")
+        cur.execute("PRAGMA journal_mode=WAL")
+        cur.execute("PRAGMA synchronous=NORMAL")
+        cur.execute("PRAGMA temp_store=MEMORY")
+        cur.execute("PRAGMA cache_size=-64000")
+        cur.execute("PRAGMA mmap_size=268435456")
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS "Note" (
@@ -395,8 +398,8 @@ class PlumStoragePool:
             """,
             (nid, nid, text, theme, is_open, is_always_on_top, window_position, now, now),
         )
+        self._rebuild_insights_and_tags(nid, text, commit=False)
         self.conn.commit()
-        self._rebuild_insights_and_tags(nid, text)
         return self.get_note(nid)
 
     def update_note(self, note_id: str, **fields) -> dict | None:
@@ -420,10 +423,10 @@ class PlumStoragePool:
         values = list(updates.values()) + [note_id]
         cur = self.conn.cursor()
         cur.execute(f'UPDATE "Note" SET {set_clause} WHERE "Id" = ?', values)
-        self.conn.commit()
 
         if "Text" in updates:
-            self._rebuild_insights_and_tags(note_id, updates["Text"])
+            self._rebuild_insights_and_tags(note_id, updates["Text"], commit=False)
+        self.conn.commit()
         return self.get_note(note_id)
 
     def delete_note(self, note_id: str, hard: bool = True):
@@ -472,13 +475,14 @@ class PlumStoragePool:
         cur.execute('DELETE FROM "Stroke" WHERE "ParentId" = ?', (parent_id,))
         self.conn.commit()
 
-    def _rebuild_insights_and_tags(self, note_id: str, text: str):
+    def _rebuild_insights_and_tags(self, note_id: str, text: str, commit: bool = True):
         cur = self.conn.cursor()
         cur.execute('DELETE FROM "Insight" WHERE "ParentId" = ?', (note_id,))
         cur.execute('DELETE FROM "Tag" WHERE "ParentId" = ?', (note_id,))
 
         if not text:
-            self.conn.commit()
+            if commit:
+                self.conn.commit()
             return
 
         tags = sorted(set(re.findall(r"(?:^|\s)#([A-Za-z0-9_\-]+)", text)))
@@ -508,7 +512,8 @@ class PlumStoragePool:
                 (str(uuid.uuid4()), note_id, p.strip(), f"tel:{p.strip()}"),
             )
 
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
 
     def get_insights(self, note_id: str) -> list[dict]:
         cur = self.conn.cursor()
@@ -592,6 +597,7 @@ class PlumStoragePool:
 # ---------------------------------------------------------------------------
 from PyQt6.QtCore import (
     QEasingCurve,
+    QEvent,
     QPoint,
     QPointF,
     QPropertyAnimation,
@@ -1075,7 +1081,7 @@ class SmoothCaretTextEdit(QTextEdit):
 
         # Smooth glide animation when moving cursor or typing
         self._glide_anim = QVariantAnimation(self)
-        self._glide_anim.setDuration(85)
+        self._glide_anim.setDuration(75)
         self._glide_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._glide_anim.valueChanged.connect(self._on_glide_step)
 
@@ -1094,7 +1100,6 @@ class SmoothCaretTextEdit(QTextEdit):
         self._idle_timer.timeout.connect(self._start_breathing)
 
         self.cursorPositionChanged.connect(self._update_caret_target)
-        self.textChanged.connect(self._update_caret_target)
         self.verticalScrollBar().valueChanged.connect(self._snap_caret_target)
 
     def set_accent(self, hex_color: str):
@@ -1190,6 +1195,29 @@ class SmoothCaretTextEdit(QTextEdit):
                 event.accept()
                 return
         super().mousePressEvent(event)
+
+    def wheelEvent(self, event):
+        delta = event.angleDelta().y()
+        if not delta:
+            return super().wheelEvent(event)
+        sb = self.verticalScrollBar()
+        if not hasattr(self, "_scroll_anim"):
+            self._scroll_anim = QVariantAnimation(self)
+            self._scroll_anim.setDuration(160)
+            self._scroll_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+            self._scroll_anim.valueChanged.connect(lambda v: sb.setValue(int(v)))
+            self._target_scroll = sb.value()
+
+        step = -int(delta * 0.85)
+        current = sb.value() if self._scroll_anim.state() != QVariantAnimation.State.Running else self._target_scroll
+        target = max(sb.minimum(), min(sb.maximum(), current + step))
+        self._target_scroll = target
+
+        self._scroll_anim.stop()
+        self._scroll_anim.setStartValue(sb.value())
+        self._scroll_anim.setEndValue(target)
+        self._scroll_anim.start()
+        event.accept()
 
     def paintEvent(self, event):
         # 1. Subtle active-line ambient illumination when focused
@@ -1571,7 +1599,7 @@ class CyberStickyNoteWindow(QWidget):
 
         self._save_text_timer = QTimer(self)
         self._save_text_timer.setSingleShot(True)
-        self._save_text_timer.setInterval(250)
+        self._save_text_timer.setInterval(220)
         self._save_text_timer.timeout.connect(self._commit_text_to_db)
 
         self._save_geom_timer = QTimer(self)
@@ -1883,7 +1911,7 @@ class CyberStickyNoteWindow(QWidget):
     def _on_editor_text_changed(self):
         if self._loading_content:
             return
-        self._commit_text_to_db()
+        self._save_text_timer.start()
 
     def _commit_text_to_db(self):
         if self._loading_content:
@@ -1894,7 +1922,16 @@ class CyberStickyNoteWindow(QWidget):
         html = self.editor.toHtml()
         self.pool.update_note(self.note_id, Text=plain, RichSpansJson=html)
         self._refresh_insight_chips()
-        self.app.refresh_hub_cards()
+        if hasattr(self.app, "hub") and self.app.hub.isVisible():
+            self.app.refresh_hub_cards()
+
+    def changeEvent(self, event):
+        if event.type() == QEvent.Type.ActivationChange and not self.isActiveWindow():
+            if self._save_text_timer.isActive():
+                self._commit_text_to_db()
+            if self._save_geom_timer.isActive():
+                self._commit_geometry_to_db()
+        super().changeEvent(event)
 
     def _commit_geometry_to_db(self):
         if self._save_geom_timer.isActive():
@@ -2290,6 +2327,37 @@ class SmoothNoteCard(QFrame):
 # ---------------------------------------------------------------------------
 # 5. Main Notes Hub Window & System Tray Controller
 # ---------------------------------------------------------------------------
+class SmoothScrollArea(QScrollArea):
+    """QScrollArea with cubic-eased smooth wheel scrolling."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._target_scroll = 0
+        self._scroll_anim = QVariantAnimation(self)
+        self._scroll_anim.setDuration(160)
+        self._scroll_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._scroll_anim.valueChanged.connect(self._on_scroll_step)
+
+    def _on_scroll_step(self, val):
+        self.verticalScrollBar().setValue(int(val))
+
+    def wheelEvent(self, event):
+        delta = event.angleDelta().y()
+        if not delta:
+            return super().wheelEvent(event)
+        sb = self.verticalScrollBar()
+        step = -int(delta * 0.9)
+        current = sb.value() if self._scroll_anim.state() != QVariantAnimation.State.Running else self._target_scroll
+        target = max(sb.minimum(), min(sb.maximum(), current + step))
+        self._target_scroll = target
+
+        self._scroll_anim.stop()
+        self._scroll_anim.setStartValue(sb.value())
+        self._scroll_anim.setEndValue(target)
+        self._scroll_anim.start()
+        event.accept()
+
+
 class CyberNotesHubWindow(QWidget):
     """Spacious, minimal All Notes window with native OS drag/resize."""
 
@@ -2686,11 +2754,16 @@ class CyberNotesApp:
             }
             """
         )
-        self.search_input.textChanged.connect(self.refresh_hub_cards)
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(150)
+        self._search_timer.timeout.connect(self.refresh_hub_cards)
+        self.search_input.textChanged.connect(self._search_timer.start)
+        self.search_input.returnPressed.connect(self.refresh_hub_cards)
         layout.addWidget(self.search_input)
 
         # --- Smooth Scroll Area for Note Cards ---
-        self.scroll = QScrollArea()
+        self.scroll = SmoothScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.scroll.setStyleSheet(

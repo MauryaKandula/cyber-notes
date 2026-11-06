@@ -28,14 +28,16 @@
 
 ## 🌟 Key Features
 
-- **144Hz+ Native Compositor Smoothness**: Native OS move and 8-edge resize hooks (`startSystemMove` / `startSystemResize`) for zero-latency dragging.
+- **144Hz+ Native Compositor Smoothness**: Native OS move and 8-edge resize hooks (`startSystemMove` / `startSystemResize`) for zero-latency dragging across high-refresh-rate displays.
+- **Cubic-Eased Kinetic Smooth Scrolling**: Smooth, physics-eased mouse wheel scrolling across both sticky note editors (`SmoothCaretTextEdit`) and the main All Notes list (`SmoothScrollArea`).
+- **Gliding & Breathing Neon Caret**: Smoothly interpolated glowing cursor (`75ms` `OutCubic`) with idle breathing aura and active-line ambient glow.
+- **Ultra-Fast SQLite WAL Storage (Sub-Millisecond)**: Instant, crash-safe local persistence in `%LOCALAPPDATA%\CyberNotes\plum.sqlite` with debounced keystroke writing, single-atomic commits, and automatic flushes on focus change or exit.
 - **Native Sticky Notes Behavior**: Automatically restores open sticky notes when Windows starts (`--startup`), and keeps floating sticky notes open on your desktop when the main `All Notes` list is closed.
-- **Gliding & Breathing Neon Caret**: Smoothly interpolated glowing cursor (`85ms` `OutCubic`) with idle breathing aura and active-line ambient glow.
 - **Live Link & Tag Highlighter**: Real-time inline highlighting for `https://` URLs and `#tags` with 1-click smart action pills (`↗` open in browser, right-click to copy).
 - **Tactile Click Ripple & Spring Animations**: Radial neon click ripples and spring-bounce transitions across note headers, color orbs, and formatting buttons.
 - **7 Cyberpunk Neon Color Themes**: Neon Yellow (`#FFE600`), Cyber Cyan (`#00F0FF`), Electric Pink (`#FF2A85`), Neon Violet (`#B845FF`), Neon Mint (`#00F59B`), Frost Silver (`#E2F1FF`), and Crimson Glow (`#FF3B5C`).
 - **Rich-Text & Freehand Neon Ink (`✎ Draw`)**: Bold (`Ctrl+B`), Italic (`Ctrl+I`), Underline (`Ctrl+U`), Strikethrough (`Ctrl+T`), Bullet Lists (`Ctrl+Shift+L`), and smooth vector ink sketching.
-- **Local AppData SQLite WAL Storage**: Crash-safe persistence in `%LOCALAPPDATA%\CyberNotes\plum.sqlite` with 1-click import from Windows Sticky Notes.
+- **1-Click Import**: Seamless local migration from legacy Windows Sticky Notes.
 
 ---
 
