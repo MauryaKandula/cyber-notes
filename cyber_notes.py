@@ -1926,12 +1926,14 @@ class CyberStickyNoteWindow(QWidget):
             self.app.refresh_hub_cards()
 
     def changeEvent(self, event):
-        if event.type() == QEvent.Type.ActivationChange and not self.isActiveWindow():
-            if self._save_text_timer.isActive():
-                self._commit_text_to_db()
-            if self._save_geom_timer.isActive():
-                self._commit_geometry_to_db()
         super().changeEvent(event)
+        if hasattr(self, "card"):
+            self.card.set_focused(self.isActiveWindow())
+        if event.type() == QEvent.Type.ActivationChange and not self.isActiveWindow():
+            if hasattr(self, "_save_text_timer") and self._save_text_timer.isActive():
+                self._commit_text_to_db()
+            if hasattr(self, "_save_geom_timer") and self._save_geom_timer.isActive():
+                self._commit_geometry_to_db()
 
     def _commit_geometry_to_db(self):
         if self._save_geom_timer.isActive():
@@ -2113,11 +2115,6 @@ class CyberStickyNoteWindow(QWidget):
     def moveEvent(self, event):
         super().moveEvent(event)
         self._save_geom_timer.start()
-
-    def changeEvent(self, event):
-        super().changeEvent(event)
-        if hasattr(self, "card"):
-            self.card.set_focused(self.isActiveWindow())
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -2552,7 +2549,10 @@ class CyberNotesApp:
 
     def _check_ipc_wakeup(self):
         if os.path.exists(self._ipc_signal_file):
+            sig_cmd = "wake"
             try:
+                with open(self._ipc_signal_file, "r", encoding="utf-8") as f:
+                    sig_cmd = f.read().strip() or "wake"
                 os.remove(self._ipc_signal_file)
             except Exception:
                 pass
@@ -2561,6 +2561,8 @@ class CyberNotesApp:
                 win.showNormal()
                 win.raise_()
                 win.activateWindow()
+            if sig_cmd == "show-hub" or not self.open_windows:
+                self.show_hub()
 
     def hide_hub(self):
         """
@@ -2754,7 +2756,7 @@ class CyberNotesApp:
             }
             """
         )
-        self._search_timer = QTimer(self)
+        self._search_timer = QTimer(self.hub)
         self._search_timer.setSingleShot(True)
         self._search_timer.setInterval(150)
         self._search_timer.timeout.connect(self.refresh_hub_cards)
@@ -2945,7 +2947,7 @@ def main_entry():
                 sig_file = os.path.join(APPDATA_DIR, ".cybernotes_wakeup.sig")
                 try:
                     with open(sig_file, "w", encoding="utf-8") as f:
-                        f.write("wake")
+                        f.write("show-hub" if "--show-hub" in sys.argv else "wake")
                 except Exception:
                     pass
                 return
