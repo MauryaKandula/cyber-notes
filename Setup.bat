@@ -18,8 +18,8 @@ if %ERRORLEVEL% equ 0 (
     )
 )
 
-echo [2/3] Creating Desktop, Start Menu & Windows Startup shortcuts...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$Wsh = New-Object -ComObject WScript.Shell; $Dir = '%~dp0'.TrimEnd('\'); $Exe = Join-Path $Dir 'CyberNotes.exe'; $Ico = Join-Path $Dir 'assets\cybernotes.ico'; foreach ($Dst in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'), [Environment]::GetFolderPath('Startup'))) { $Lnk = $Wsh.CreateShortcut((Join-Path $Dst 'CyberNotes.lnk')); $Lnk.TargetPath = $Exe; if ($Dst -eq [Environment]::GetFolderPath('Startup')) { $Lnk.Arguments = '--startup' }; $Lnk.WorkingDirectory = $Dir; $Lnk.IconLocation = \"$Ico,0\"; $Lnk.Description = 'CyberNotes — Modern Neon Sticky Notes'; $Lnk.Save() }"
+echo [2/3] Creating Desktop & Start Menu shortcuts (Startup handled via Windows Registry)...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$Wsh = New-Object -ComObject WScript.Shell; $Dir = '%~dp0'.TrimEnd('\'); $Exe = Join-Path $Dir 'CyberNotes.exe'; $Ico = Join-Path $Dir 'assets\cybernotes.ico'; foreach ($Dst in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'))) { $Lnk = $Wsh.CreateShortcut((Join-Path $Dst 'CyberNotes.lnk')); $Lnk.TargetPath = $Exe; $Lnk.WorkingDirectory = $Dir; $Lnk.IconLocation = \"$Ico,0\"; $Lnk.Description = 'CyberNotes — Modern Neon Sticky Notes'; $Lnk.Save() }; $StartupLnk = Join-Path ([Environment]::GetFolderPath('Startup')) 'CyberNotes.lnk'; if (Test-Path $StartupLnk) { Remove-Item $StartupLnk -Force }"
 
 echo [3/3] Launching CyberNotes...
 start "" "%~dp0CyberNotes.exe"

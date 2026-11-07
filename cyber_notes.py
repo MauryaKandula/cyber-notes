@@ -48,14 +48,58 @@ def get_appdata_dir() -> str:
 
 APPDATA_DIR = get_appdata_dir()
 LOG_FILE = os.path.join(APPDATA_DIR, "cyber_notes.log")
-try:
-    _log_f = open(LOG_FILE, "a", encoding="utf-8", buffering=1)
-    if sys.stdout is None:
-        sys.stdout = _log_f
-    if sys.stderr is None:
-        sys.stderr = _log_f
-except Exception:
-    pass
+CRASH_LOG = os.path.join(APPDATA_DIR, "crash.log")
+
+
+class SafeLogger:
+    """Thread-safe, non-crashing stream logger for stdout/stderr in Windows GUI environments."""
+
+    def __init__(self, log_path: str, fallback_stream=None):
+        self.log_path = log_path
+        self.fallback = fallback_stream
+
+    def write(self, message: str):
+        if not message:
+            return
+        try:
+            with open(self.log_path, "a", encoding="utf-8", errors="replace") as f:
+                f.write(message)
+        except Exception:
+            pass
+        if self.fallback and hasattr(self.fallback, "write"):
+            try:
+                self.fallback.write(message)
+            except Exception:
+                pass
+
+    def flush(self):
+        if self.fallback and hasattr(self.fallback, "flush"):
+            try:
+                self.fallback.flush()
+            except Exception:
+                pass
+
+
+sys.stdout = SafeLogger(LOG_FILE, sys.stdout)
+sys.stderr = SafeLogger(LOG_FILE, sys.stderr)
+
+
+def global_exception_handler(exctype, value, tb):
+    """Crash shield: writes unhandled stack traces to crash.log and cyber_notes.log without killing GUI."""
+    import traceback
+
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    msg = f"\n[{ts}] UNHANDLED EXCEPTION:\n" + "".join(traceback.format_exception(exctype, value, tb))
+    try:
+        with open(CRASH_LOG, "a", encoding="utf-8") as f:
+            f.write(msg)
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(msg)
+    except Exception:
+        pass
+
+
+sys.excepthook = global_exception_handler
 
 # ---------------------------------------------------------------------------
 # 1. Cyberpunk Neon Color Palette (Clean, Aesthetic, Lore-Free)
@@ -183,12 +227,13 @@ class PlumStoragePool:
     def __init__(self, db_path: str):
         self.db_path = db_path
         os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
-        self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        self.conn = sqlite3.connect(self.db_path, check_same_thread=False, timeout=30.0)
         self.conn.row_factory = sqlite3.Row
         self._init_schema()
 
     def _init_schema(self):
         cur = self.conn.cursor()
+        cur.execute("PRAGMA busy_timeout=5000")
         cur.execute("PRAGMA journal_mode=WAL")
         cur.execute("PRAGMA synchronous=NORMAL")
         cur.execute("PRAGMA temp_store=MEMORY")
@@ -601,6 +646,7 @@ from PyQt6.QtCore import (
     QPoint,
     QPointF,
     QPropertyAnimation,
+    QRect,
     QRectF,
     QSize,
     Qt,
@@ -625,6 +671,7 @@ from PyQt6.QtGui import (
     QTextCharFormat,
     QTextCursor,
     QTextDocument,
+    QTextFormat,
     QTextListFormat,
 )
 from PyQt6.QtWidgets import (
@@ -1100,11 +1147,28 @@ class SmoothCaretTextEdit(QTextEdit):
         self._idle_timer.timeout.connect(self._start_breathing)
 
         self.cursorPositionChanged.connect(self._update_caret_target)
+        self.cursorPositionChanged.connect(self._highlight_active_line)
         self.verticalScrollBar().valueChanged.connect(self._snap_caret_target)
 
     def set_accent(self, hex_color: str):
         self.accent_color = QColor(hex_color)
+        if self.hasFocus():
+            self._highlight_active_line()
         self.viewport().update()
+
+    def _highlight_active_line(self):
+        """Native, crash-proof active line ambient glow via QTextEdit.ExtraSelection."""
+        if not self.hasFocus():
+            self.setExtraSelections([])
+            return
+        sel = QTextEdit.ExtraSelection()
+        line_col = QColor(self.accent_color)
+        line_col.setAlpha(14)
+        sel.format.setBackground(line_col)
+        sel.format.setProperty(QTextFormat.Property.FullWidthSelection, True)
+        sel.cursor = self.textCursor()
+        sel.cursor.clearSelection()
+        self.setExtraSelections([sel])
 
     def _snap_caret_target(self):
         cr = self.cursorRect()
@@ -1159,6 +1223,7 @@ class SmoothCaretTextEdit(QTextEdit):
 
     def focusInEvent(self, event):
         super().focusInEvent(event)
+        self._highlight_active_line()
         self._snap_caret_target()
         self._caret_opacity = 1.0
         self._idle_timer.start()
@@ -1166,6 +1231,7 @@ class SmoothCaretTextEdit(QTextEdit):
 
     def focusOutEvent(self, event):
         super().focusOutEvent(event)
+        self.setExtraSelections([])
         self._breath_anim.stop()
         self._glide_anim.stop()
         self.viewport().update()
@@ -1220,46 +1286,30 @@ class SmoothCaretTextEdit(QTextEdit):
         event.accept()
 
     def paintEvent(self, event):
-        # 1. Subtle active-line ambient illumination when focused
-        if self.hasFocus():
-            vp_painter = QPainter(self.viewport())
-            vp_painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-            line_rect = QRectF(
-                2.0,
-                self._caret_rect.y() - 1.0,
-                float(self.viewport().width() - 4.0),
-                self._caret_rect.height() + 2.0,
-            )
-            line_col = QColor(self.accent_color)
-            line_col.setAlpha(11)
-            line_path = QPainterPath()
-            line_path.addRoundedRect(line_rect, 5.0, 5.0)
-            vp_painter.fillPath(line_path, line_col)
-            vp_painter.end()
-
-        # 2. Render rich text document
+        # 1. Native render rich text document & active-line extra selection
         super().paintEvent(event)
 
-        # 3. Render Smooth Gliding & Breathing Neon Caret
+        # 2. Render Smooth Gliding & Breathing Neon Caret on top
         if self.hasFocus():
             painter = QPainter(self.viewport())
             painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            try:
+                # Soft outer neon halo around the caret
+                halo_rect = self._caret_rect.adjusted(-2.2, -1.0, 2.2, 1.0)
+                halo_col = QColor(self.accent_color)
+                halo_col.setAlpha(int(65 * self._caret_opacity))
+                halo_path = QPainterPath()
+                halo_path.addRoundedRect(halo_rect, 2.5, 2.5)
+                painter.fillPath(halo_path, halo_col)
 
-            # Soft outer neon halo around the caret
-            halo_rect = self._caret_rect.adjusted(-2.2, -1.0, 2.2, 1.0)
-            halo_col = QColor(self.accent_color)
-            halo_col.setAlpha(int(65 * self._caret_opacity))
-            halo_path = QPainterPath()
-            halo_path.addRoundedRect(halo_rect, 2.5, 2.5)
-            painter.fillPath(halo_path, halo_col)
-
-            # Crisp inner neon pill caret
-            core_col = QColor(self.accent_color)
-            core_col.setAlpha(int(250 * self._caret_opacity))
-            core_path = QPainterPath()
-            core_path.addRoundedRect(self._caret_rect, 1.2, 1.2)
-            painter.fillPath(core_path, core_col)
-            painter.end()
+                # Crisp inner neon pill caret
+                core_col = QColor(self.accent_color)
+                core_col.setAlpha(int(250 * self._caret_opacity))
+                core_path = QPainterPath()
+                core_path.addRoundedRect(self._caret_rect, 1.2, 1.2)
+                painter.fillPath(core_path, core_col)
+            finally:
+                painter.end()
 
 
 class GlassNoteSurface(QFrame):
@@ -1621,36 +1671,50 @@ class CyberStickyNoteWindow(QWidget):
     def _animate_open(self):
         self.setWindowOpacity(0.0)
         self.show()
+        self.raise_()
+        self.activateWindow()
         self._fade_anim = QPropertyAnimation(self, b"windowOpacity")
-        self._fade_anim.setDuration(210)
+        self._fade_anim.setDuration(190)
         self._fade_anim.setStartValue(0.0)
         self._fade_anim.setEndValue(1.0)
         self._fade_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._fade_anim.start()
 
     def _configure_window_flags(self):
-        # Qt.WindowType.Tool prevents individual sticky notes from cluttering the
-        # Windows taskbar and avoids unexpected app-termination when the Hub closes,
-        # while keeping the sticky note floating persistently on the desktop.
-        flags = Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool
+        # Native Frameless Window: first-class desktop window that respects Win+D,
+        # remains persistent on desktop, and stays anchored where you leave it.
+        flags = Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window
         if self.is_always_on_top:
             flags |= Qt.WindowType.WindowStaysOnTopHint
         self.setWindowFlags(flags)
 
     def _restore_geometry(self, pos_str: str):
-        m = re.match(r"^(\d+)x(\d+)\+(-?\d+)\+(-?\d+)$", str(pos_str).strip())
+        target_rect = None
+        # Match WxH+X+Y supporting negative coordinates across multi-monitor setups
+        m = re.match(r"^(\d+)x(\d+)\+?(-?\d+)\+?(-?\d+)$", str(pos_str).strip())
         if m:
             w, h, x, y = map(int, m.groups())
-            w = max(340, min(w, 1000))
-            h = max(320, min(h, 1000))
-            x = max(20, min(x, 2200))
-            y = max(20, min(y, 1200))
-            self.setGeometry(x, y, w, h)
+            w = max(320, min(w, 1800))
+            h = max(280, min(h, 1400))
+            candidate = QRect(x, y, w, h)
+            screens = QApplication.screens()
+            if any(s.geometry().intersects(candidate) for s in screens):
+                target_rect = candidate
+
+        if target_rect:
+            self.setGeometry(target_rect)
         else:
+            primary = QApplication.primaryScreen()
+            p_geom = primary.availableGeometry() if primary else QRect(40, 40, 1200, 800)
             idx = len(self.app.open_windows)
-            x = 540 + (idx % 2) * 415
-            y = 80 + (idx // 2) * 410
-            self.setGeometry(x, y, 405, 395)
+            w, h = 405, 395
+            x = p_geom.x() + 80 + (idx % 4) * 420
+            y = p_geom.y() + 60 + (idx // 4) * 410
+            if x + w > p_geom.right():
+                x = p_geom.x() + 40
+            if y + h > p_geom.bottom():
+                y = p_geom.y() + 40
+            self.setGeometry(x, y, w, h)
 
     def _build_ui(self):
         outer = QVBoxLayout(self)
@@ -2088,7 +2152,12 @@ class CyberStickyNoteWindow(QWidget):
         self._close_anim.setStartValue(self.windowOpacity())
         self._close_anim.setEndValue(0.0)
         self._close_anim.setEasingCurve(QEasingCurve.Type.InCubic)
-        self._close_anim.finished.connect(self.hide)
+
+        def _finish_close():
+            self.hide()
+            self.setWindowOpacity(1.0)
+
+        self._close_anim.finished.connect(_finish_close)
         self._close_anim.start()
         self.app.refresh_hub_cards()
 
@@ -2458,20 +2527,14 @@ class CyberNotesApp:
         all_notes = self.pool.get_all_notes()
         if not all_notes:
             return
-        # If the user has pinned ("stuck") note(s), or open note(s), restore them.
-        # On startup (--startup), if any notes are pinned (IsAlwaysOnTop=1), open ONLY
-        # the pinned/stuck sticky notes; otherwise open the primary/most-recent open note.
-        pinned_notes = [n for n in all_notes if n.get("IsAlwaysOnTop", 0)]
+        # Restore all notes that were previously open
         open_notes = [n for n in all_notes if n.get("IsOpen", 0)]
 
-        if self.startup_mode and pinned_notes:
-            for n in pinned_notes:
-                self.open_note_window(n["Id"])
-        elif open_notes:
+        if open_notes:
             for n in open_notes:
                 self.open_note_window(n["Id"])
         else:
-            # Always ensure the primary (most recent) sticky note appears
+            # If no notes were marked open, restore the primary / most-recent note
             self.open_note_window(all_notes[0]["Id"])
 
     def _on_about_to_quit(self):
@@ -2499,8 +2562,9 @@ class CyberNotesApp:
     @classmethod
     def ensure_windows_startup(cls, enable: bool = True) -> bool:
         """
-        Registers or removes CyberNotes in Windows Startup (HKCU\\...\\Run and
-        Startup folder shortcut) so sticky notes automatically open when the PC boots.
+        Registers or removes CyberNotes in Windows Startup (HKCU\\...\\Run) so sticky notes
+        automatically open on PC boot. Also cleans up duplicate Startup folder shortcuts to
+        prevent duplicate boot races.
         """
         if sys.platform != "win32":
             return False
@@ -2531,6 +2595,16 @@ class CyberNotesApp:
                         winreg.DeleteValue(k, cls.STARTUP_REG_VAL)
                     except FileNotFoundError:
                         pass
+
+            # Clean up duplicate shortcut in Startup folder to prevent startup collisions
+            startup_dir = os.path.join(os.environ.get("APPDATA", ""), r"Microsoft\Windows\Start Menu\Programs\Startup")
+            startup_lnk = os.path.join(startup_dir, "CyberNotes.lnk")
+            if os.path.exists(startup_lnk):
+                try:
+                    os.remove(startup_lnk)
+                except Exception:
+                    pass
+
             return True
         except Exception:
             return False
@@ -2539,7 +2613,7 @@ class CyberNotesApp:
         """
         Polls a lightweight signal file so launching CyberNotes a second time
         (e.g., from Desktop/Start Menu shortcut) wakes up the existing instance
-        and shows the Hub & open Sticky Notes instead of spawning duplicates.
+        and shows the open Sticky Notes instead of spawning duplicates.
         """
         self._ipc_signal_file = os.path.join(APPDATA_DIR, ".cybernotes_wakeup.sig")
         self._ipc_timer = QTimer(self.hub)
@@ -2559,6 +2633,7 @@ class CyberNotesApp:
             self._restore_open_note_windows()
             for win in self.open_windows.values():
                 win.showNormal()
+                win.setWindowOpacity(1.0)
                 win.raise_()
                 win.activateWindow()
             if sig_cmd == "show-hub" or not self.open_windows:
@@ -2626,11 +2701,20 @@ class CyberNotesApp:
             window_position="405x355+535+495",
         )
 
+    def show_all_sticky_notes(self):
+        """Brings all open sticky notes to the foreground and unminimizes them."""
+        self._restore_open_note_windows()
+        for win in self.open_windows.values():
+            win.showNormal()
+            win.setWindowOpacity(1.0)
+            win.raise_()
+            win.activateWindow()
+
     def _setup_system_tray(self):
         if not QSystemTrayIcon.isSystemTrayAvailable():
             return
         self.tray = QSystemTrayIcon(self.app_icon, self.qt_app)
-        self.tray.setToolTip("CyberNotes")
+        self.tray.setToolTip("CyberNotes — Modern Neon Sticky Notes")
 
         menu = QMenu()
         menu.setStyleSheet(
@@ -2652,11 +2736,15 @@ class CyberNotesApp:
             }
             """
         )
+        act_show_all = QAction("👁  Show All Sticky Notes", menu)
+        act_show_all.triggered.connect(self.show_all_sticky_notes)
+        menu.addAction(act_show_all)
+
         act_new = QAction("＋  New Sticky Note", menu)
         act_new.triggered.connect(self.spawn_new_note)
         menu.addAction(act_new)
 
-        act_hub = QAction("☷  Open All Notes", menu)
+        act_hub = QAction("☷  Open All Notes Hub", menu)
         act_hub.triggered.connect(self.show_hub)
         menu.addAction(act_hub)
 
@@ -2677,11 +2765,10 @@ class CyberNotesApp:
         self.tray.show()
 
     def _on_tray_activated(self, reason):
-        if reason in (
-            QSystemTrayIcon.ActivationReason.Trigger,
-            QSystemTrayIcon.ActivationReason.DoubleClick,
-        ):
+        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
             self.show_hub()
+        elif reason == QSystemTrayIcon.ActivationReason.Trigger:
+            self.show_all_sticky_notes()
 
     def _build_hub_ui(self):
         outer = QVBoxLayout(self.hub)
