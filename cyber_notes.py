@@ -2431,7 +2431,7 @@ class CyberNotesHubWindow(QWidget):
         super().__init__(None)
         self.app = app_controller
         self.setWindowTitle("CyberNotes")
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setMouseTracking(True)
         self.setMinimumSize(400, 500)
@@ -2810,8 +2810,8 @@ class CyberNotesApp:
         btn_min = AnimatedGlassButton("—", self.hub_card)
         btn_min.setFixedSize(30, 30)
         btn_min.setFont(QFont("Segoe UI", 10))
-        btn_min.setToolTip("Minimize")
-        btn_min.clicked.connect(self.hub.showMinimized)
+        btn_min.setToolTip("Minimize to Background")
+        btn_min.clicked.connect(self.hide_hub)
         top_bar.addWidget(btn_min)
 
         btn_close = AnimatedGlassButton("✕", self.hub_card, is_close=True)
