@@ -1681,9 +1681,9 @@ class CyberStickyNoteWindow(QWidget):
         self._fade_anim.start()
 
     def _configure_window_flags(self):
-        # Native Frameless Window: first-class desktop window that respects Win+D,
-        # remains persistent on desktop, and stays anchored where you leave it.
-        flags = Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window
+        # Qt.WindowType.Tool prevents sticky notes from showing in the Windows taskbar,
+        # allowing CyberNotes to run cleanly in the background and system tray.
+        flags = Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool
         if self.is_always_on_top:
             flags |= Qt.WindowType.WindowStaysOnTopHint
         self.setWindowFlags(flags)
